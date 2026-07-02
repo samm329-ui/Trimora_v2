@@ -6,6 +6,11 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from dotenv import load_dotenv
+
+dotenv_path = Path(__file__).resolve().parents[2] / ".env"
+if dotenv_path.exists():
+    load_dotenv(dotenv_path)
 
 
 @dataclass
@@ -21,6 +26,8 @@ class Settings:
     overlap_seconds: int = 2
     retry_count: int = 3
     transcription_provider: str = "stub"
+    groq_api_key: str = ""
+    gemini_api_key: str = ""
     transcription_timeout_seconds: int = 600
     export_timeout_seconds: int = 600
     min_segment_seconds: float = 1.2
@@ -53,6 +60,8 @@ class Settings:
         base.retry_count = int(job.get("retry_count", base.retry_count))
         base.transcription_provider = str(job.get("transcription_provider", base.transcription_provider))
         base.transcription_timeout_seconds = int(job.get("transcription_timeout_seconds", base.transcription_timeout_seconds))
+        base.groq_api_key = str(os.getenv("GROQ_API_KEY", ""))
+        base.gemini_api_key = str(os.getenv("GEMINI_API_KEY", ""))
         base.export_timeout_seconds = int(job.get("export_timeout_seconds", base.export_timeout_seconds))
         base.min_segment_seconds = float(thresholds.get("min_segment_seconds", base.min_segment_seconds))
         base.min_candidate_score = float(thresholds.get("min_candidate_score", base.min_candidate_score))
