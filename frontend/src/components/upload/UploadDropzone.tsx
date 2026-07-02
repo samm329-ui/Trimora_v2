@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import type { ChangeEvent } from "react";
 import { Button } from "../shared/Button";
 
@@ -8,6 +9,8 @@ export function UploadDropzone({
   onFile: (file: File) => void;
   disabled?: boolean;
 }) {
+  const inputRef = useRef<HTMLInputElement>(null);
+
   function handleChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (file) onFile(file);
@@ -19,16 +22,17 @@ export function UploadDropzone({
       <p className="mb-5 max-w-xl text-sm text-slate-400">
         Submit one long video and let the backend create a job, process it in the background, and generate previews.
       </p>
-      <label className="inline-flex cursor-pointer">
-        <input
-          type="file"
-          accept="video/*"
-          className="hidden"
-          onChange={handleChange}
-          disabled={disabled}
-        />
-        <Button disabled={disabled}>Choose video</Button>
-      </label>
+      <input
+        ref={inputRef}
+        type="file"
+        accept="video/*"
+        className="hidden"
+        onChange={handleChange}
+        disabled={disabled}
+      />
+      <Button disabled={disabled} onClick={() => inputRef.current?.click()}>
+        Choose video
+      </Button>
     </div>
   );
 }
