@@ -111,10 +111,14 @@ call :find_ffmpeg
 
 if defined FFMPEG_FOUND goto :ffmpeg_ready
 
-echo   [*] FFmpeg not found. Attempting auto-install via winget ...
+echo   [*] FFmpeg not found. Attempting auto-install ...
 echo(
+where winget >nul 2>&1
+if errorlevel 1 (
+    echo   [!] winget not available on this system -- skipping
+    goto :try_choco
+)
 echo   Press any key to install FFmpeg via winget.
-echo   (winget is built into Windows 10/11 -- no download needed)
 echo(
 pause
 
@@ -133,17 +137,32 @@ if defined SYS_PATH set "PATH=%SYS_PATH%;%ORIG_PATH%"
 set "FFMPEG_FOUND="
 call :find_ffmpeg
 
+:try_choco
 if not defined FFMPEG_FOUND (
-    echo   [X] Auto-install may have failed. Trying Chocolatey ...
+    where choco >nul 2>&1
+    if errorlevel 1 (
+        echo   [!] Chocolatey not available either
+        goto :manual_install
+    )
+    echo   [*] Installing FFmpeg via Chocolatey ...
+    echo(
     choco install ffmpeg -y
     echo(
     call :find_ffmpeg
 )
 
+:manual_install
 if not defined FFMPEG_FOUND (
-    echo   [X] Could not locate FFmpeg. Please install manually:
-    echo        winget install FFmpeg
-    echo        or download from https://ffmpeg.org/download.html
+    echo   [X] Could not locate or install FFmpeg automatically.
+    echo(
+    echo   Please install FFmpeg manually:
+    echo     1. Download from https://ffmpeg.org/download.html
+    echo     2. Add the bin\ folder to your system PATH
+    echo(
+    echo   Or use one of these commands in an admin terminal:
+    echo     winget install FFmpeg
+    echo     choco install ffmpeg
+    echo     scoop install ffmpeg
     echo(
     echo   After installing, restart this script.
     pause
