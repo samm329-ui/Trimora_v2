@@ -1,0 +1,28 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Job Record",
+  "type": "object",
+  "required": ["job_id", "status", "progress"],
+  "properties": {
+    "job_id": { "type": "string", "format": "uuid" },
+    "status": {
+      "type": "string",
+      "enum": [
+        "uploaded", "queued", "extracting_audio", "chunking",
+        "transcribing", "merging", "segmenting", "analyzing",
+        "scoring", "preview_ready", "export_ready", "complete",
+        "cancelled", "failed"
+      ]
+    },
+    "progress": { "type": "number", "minimum": 0, "maximum": 1 },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "completed_at": { "type": ["string", "null"], "format": "date-time" },
+    "error": { "type": ["string", "null"] },
+    "source_filename": { "type": ["string", "null"] },
+    "source_path": { "type": ["string", "null"] },
+    "preview_count": { "type": "integer", "minimum": 0 },
+    "export_count": { "type": "integer", "minimum": 0 },
+    "stats": { "type": "object" }
+  }
+}
