@@ -96,50 +96,59 @@ echo ================================================================
 echo   Checking FFmpeg
 echo ================================================================
 echo(
-where ffmpeg >nul 2>&1
-if not errorlevel 1 goto :ffmpeg_ready
+
+:: Try to read PATH from registry (sees system-wide changes made by installers)
+set "ORIG_PATH=%PATH%"
+for /f "skip=2 tokens=3*" %%a in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v PATH 2^>nul') do (
+    if "%%a"=="REG_SZ" set "SYS_PATH=%%b"
+    if "%%a"=="REG_EXPAND_SZ" set "SYS_PATH=%%b"
+)
+if defined SYS_PATH set "PATH=%SYS_PATH%;%ORIG_PATH%"
+
+:: Search function that scans all known locations and sets PATH if found
+set "FFMPEG_FOUND="
+call :find_ffmpeg
+
+if defined FFMPEG_FOUND goto :ffmpeg_ready
 
 echo   [*] FFmpeg not found. Attempting auto-install via winget ...
 echo(
-echo   Press any key to install FFmpeg via winget, or close this window to cancel.
+echo   Press any key to install FFmpeg via winget.
 echo   (winget is built into Windows 10/11 -- no download needed)
 echo(
 pause
 
-winget install "FFmpeg" --accept-source-agreements --accept-package-agreements >nul 2>&1
-if errorlevel 1 (
-    echo   [X] winget install failed. Trying Chocolatey ...
-    choco install ffmpeg -y >nul 2>&1
-    if errorlevel 1 (
-        echo   [X] Auto-install failed. Please install FFmpeg manually:
-        echo        winget install FFmpeg
-        echo        or download from https://ffmpeg.org/download.html
-        echo(
-        echo   After installing, restart this script.
-        pause
-        exit /b 1
-    )
+winget install "FFmpeg" --accept-source-agreements --accept-package-agreements
+echo(
+
+:: After install, refresh PATH from registry again
+set "SYS_PATH="
+for /f "skip=2 tokens=3*" %%a in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v PATH 2^>nul') do (
+    if "%%a"=="REG_SZ" set "SYS_PATH=%%b"
+    if "%%a"=="REG_EXPAND_SZ" set "SYS_PATH=%%b"
+)
+if defined SYS_PATH set "PATH=%SYS_PATH%;%ORIG_PATH%"
+
+:: Search again after install
+set "FFMPEG_FOUND="
+call :find_ffmpeg
+
+if not defined FFMPEG_FOUND (
+    echo   [X] Auto-install may have failed. Trying Chocolatey ...
+    choco install ffmpeg -y
+    echo(
+    call :find_ffmpeg
 )
 
-:: refresh PATH to pick up new install
-for /f %%i in ('where ffmpeg 2^>nul') do (
-    set "FFMPEG_PATH=%%~dpi"
-    set "PATH=%%~dpi;%PATH%"
-    goto :ffmpeg_ready
+if not defined FFMPEG_FOUND (
+    echo   [X] Could not locate FFmpeg. Please install manually:
+    echo        winget install FFmpeg
+    echo        or download from https://ffmpeg.org/download.html
+    echo(
+    echo   After installing, restart this script.
+    pause
+    exit /b 1
 )
-
-:: still not found -- try common paths
-for %%p in ("%ProgramFiles%\FFmpeg\bin\ffmpeg.exe" "%ProgramFiles(x86)%\FFmpeg\bin\ffmpeg.exe" "%USERPROFILE%\scoop\apps\ffmpeg\current\bin\ffmpeg.exe" "C:\tools\ffmpeg\bin\ffmpeg.exe") do (
-    if exist "%%~p" (
-        set "PATH=%%~dp;%PATH%"
-        goto :ffmpeg_ready
-    )
-)
-
-echo   [X] FFmpeg installed but not found in expected locations.
-echo   Please restart this script after installing FFmpeg.
-pause
-exit /b 1
 
 :ffmpeg_ready
 ffmpeg -version >nul 2>&1
@@ -191,4 +200,71 @@ echo   Close this window or press Ctrl+C to stop
 echo(
 
 pause
+exit /b 0
+
+:: ─────────────────────────────────────────────────────────
+:: :find_ffmpeg  --  search all known locations for ffmpeg.exe
+::    Sets FFMPEG_FOUND=1 and prepends the bin dir to PATH
+:: ─────────────────────────────────────────────────────────
+:find_ffmpeg
+where ffmpeg >nul 2>&1
+if not errorlevel 1 (
+    for /f "delims=" %%x in ('where ffmpeg') do (
+        set "FFMPEG_FOUND=1"
+        set "PATH=%%~dpx;%PATH%"
+    )
+    exit /b 0
+)
+
+:: Scan winget packages directory recursively
+if exist "%LOCALAPPDATA%\Microsoft\WinGet\Packages\" (
+    for /r "%LOCALAPPDATA%\Microsoft\WinGet\Packages" %%x in (ffmpeg.exe) do (
+        if exist "%%x" (
+            set "FFMPEG_FOUND=1"
+            set "PATH=%%~dpx;%PATH%"
+            exit /b 0
+        )
+    )
+)
+
+:: Scan scoop
+if exist "%USERPROFILE%\scoop\apps\ffmpeg\current\bin\ffmpeg.exe" (
+    set "FFMPEG_FOUND=1"
+    set "PATH=%USERPROFILE%\scoop\apps\ffmpeg\current\bin;%PATH%"
+    exit /b 0
+)
+
+:: Scan Program Files
+if exist "%ProgramFiles%\FFmpeg\bin\ffmpeg.exe" (
+    set "FFMPEG_FOUND=1"
+    set "PATH=%ProgramFiles%\FFmpeg\bin;%PATH%"
+    exit /b 0
+)
+if exist "%ProgramFiles(x86)%\FFmpeg\bin\ffmpeg.exe" (
+    set "FFMPEG_FOUND=1"
+    set "PATH=%ProgramFiles(x86)%\FFmpeg\bin;%PATH%"
+    exit /b 0
+)
+
+:: Scan C:\tools (Chocolatey)
+if exist "C:\tools\ffmpeg\bin\ffmpeg.exe" (
+    set "FFMPEG_FOUND=1"
+    set "PATH=C:\tools\ffmpeg\bin;%PATH%"
+    exit /b 0
+)
+
+:: Scan local AppData
+if exist "%LOCALAPPDATA%\ffmpeg\bin\ffmpeg.exe" (
+    set "FFMPEG_FOUND=1"
+    set "PATH=%LOCALAPPDATA%\ffmpeg\bin;%PATH%"
+    exit /b 0
+)
+
+:: Scan ProgramData (Chocolatey shims)
+if exist "%ProgramData%\chocolatey\lib\ffmpeg\tools\ffmpeg.exe" (
+    set "FFMPEG_FOUND=1"
+    set "PATH=%ProgramData%\chocolatey\lib\ffmpeg\tools;%PATH%"
+    exit /b 0
+)
+
 exit /b 0
