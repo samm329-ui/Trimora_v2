@@ -14,7 +14,7 @@ storage:
 
 job:
   retry_count: 3
-  transcription_provider: "stub"
+  transcription_provider: "groq"
   transcription_timeout_seconds: 600
   export_timeout_seconds: 600
 
