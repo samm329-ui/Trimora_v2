@@ -1,0 +1,13 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Preview Manifest",
+  "type": "object",
+  "required": ["job_id", "clips"],
+  "properties": {
+    "job_id": { "type": "string" },
+    "clips": {
+      "type": "array",
+      "items": { "$ref": "clip.schema.json" }
+    }
+  }
+}
