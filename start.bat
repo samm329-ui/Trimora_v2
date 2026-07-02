@@ -8,16 +8,6 @@ set "BACKEND_DIR=%ROOT%backend"
 set "FRONTEND_DIR=%ROOT%frontend"
 set "VENV_DIR=%BACKEND_DIR%\.venv"
 
-:: ──────────────────────────────────────
-:: colour helpers
-:: ──────────────────────────────────────
-set "GREEN=[92m"
-set "YELLOW=[93m"
-set "RED=[91m"
-set "CYAN=[96m"
-set "BOLD=[1m"
-set "RESET=[0m"
-
 call :log step "Trimora — pre-flight checks"
 echo(
 
@@ -31,11 +21,7 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-python --version 2>&1 | findstr /R "3\.\(1[0-9]\|[0-9]\)" >nul
-if errorlevel 1 (
-    call :log warn "Python 3.10+ recommended — you have:"
-    python --version
-)
+python --version
 call :log ok   "Python found"
 echo(
 
@@ -58,7 +44,7 @@ echo(
 :: ──────────────────────────────────────
 call :log info "Setting up Python virtual environment …"
 if not exist "%VENV_DIR%\Scripts\python.exe" (
-    echo   %CYAN%[*]%RESET% Creating virtual environment at %VENV_DIR% …
+    call :log info "Creating virtual environment at %VENV_DIR% …"
     python -m venv "%VENV_DIR%"
     if errorlevel 1 (
         call :log fail "Failed to create virtual environment"
@@ -67,17 +53,16 @@ if not exist "%VENV_DIR%\Scripts\python.exe" (
     )
     call :log ok   "Virtual environment created"
 ) else (
-    call :log ok   "Virtual environment exists at %VENV_DIR%"
+    call :log ok   "Virtual environment exists"
 )
 echo(
 
 :: ──────────────────────────────────────
-:: 3b. pip install (verbose — shows packages, sizes, progress)
+:: 4. pip install
 :: ──────────────────────────────────────
 call :log step "Installing backend Python packages"
 echo(
-echo   This installs: FastAPI, uvicorn, numpy, sentence-transformers, PyYAML, pytest, httpx, and more
-echo   Location: %VENV_DIR%
+call :log info "Running: pip install -r requirements.txt"
 echo(
 "%VENV_DIR%\Scripts\pip" install -r "%BACKEND_DIR%\requirements.txt"
 if errorlevel 1 (
@@ -86,66 +71,53 @@ if errorlevel 1 (
     exit /b 1
 )
 echo(
-call :log ok   "All backend Python packages installed"
-call :log info "Packages installed:"
-"%VENV_DIR%\Scripts\pip" list --format=columns 2>nul
+call :log ok   "Backend dependencies installed"
 echo(
 
 :: ──────────────────────────────────────
-:: 4. frontend npm install (verbose)
+:: 5. frontend npm install
 :: ──────────────────────────────────────
-call :log step "Installing frontend packages (npm)"
-echo(
-echo   Packages: react, react-dom, vite, typescript, tailwindcss, and more
-echo   Location: %FRONTEND_DIR%\node_modules
+call :log step "Installing frontend packages"
 echo(
 if not exist "%FRONTEND_DIR%\node_modules" (
-    cd /d "%FRONTEND_DIR%"
-    echo   %CYAN%[*]%RESET% Running npm install — this may take 1-3 minutes depending on your internet speed
-    echo   %CYAN%[*]%RESET% npm will show package name, progress bar, and estimated time for each phase
+    call :log info "Running: npm install in frontend/"
     echo(
+    pushd "%FRONTEND_DIR%"
     call npm install
     if errorlevel 1 (
+        popd
         call :log fail "npm install failed — check your internet connection and package.json"
         pause
         exit /b 1
     )
-    echo(
-    call :log ok   "All frontend packages installed"
-    call :log info "Installed packages:"
-    call npm list --depth=0 2>nul
-    echo(
-    cd /d "%ROOT%"
+    popd
+    call :log ok   "Frontend dependencies installed"
 ) else (
-    call :log ok   "node_modules already exists — skipping install"
-    call :log info "Run 'npm update' inside frontend/ to refresh packages"
+    call :log ok   "node_modules already exists — skipping"
 )
 echo(
 
 :: ──────────────────────────────────────
-:: 5. check FFmpeg  (critical)
+:: 6. check FFmpeg
 :: ──────────────────────────────────────
-call :log step "Checking FFmpeg (required for audio/video processing)"
+call :log step "Checking FFmpeg"
 echo(
-set "FFMPEG_PATH="
+set "FFMPEG_OK=no"
 where ffmpeg >nul 2>&1
-if errorlevel 1 (
-    call :log warn "FFmpeg not in PATH — searching common locations …"
-    echo(
+if not errorlevel 1 set "FFMPEG_OK=yes"
 
-    for %%p in ("%ProgramFiles%\FFmpeg\bin\ffmpeg.exe"
-                "%ProgramFiles(x86)%\FFmpeg\bin\ffmpeg.exe"
-                "%LocalAppData%\Microsoft\WinGet\Packages\FFmpeg\*ffmpeg.exe"
-                "%USERPROFILE%\scoop\apps\ffmpeg\current\bin\ffmpeg.exe"
-                "C:\tools\ffmpeg\bin\ffmpeg.exe"
-                "%USERPROFILE%\AppData\Local\ffmpeg\bin\ffmpeg.exe") do (
+if not "!FFMPEG_OK!"=="yes" (
+    call :log warn "FFmpeg not in PATH — scanning common install locations …"
+    for %%p in ("%ProgramFiles%\FFmpeg\bin\ffmpeg.exe" "%ProgramFiles(x86)%\FFmpeg\bin\ffmpeg.exe" "%USERPROFILE%\scoop\apps\ffmpeg\current\bin\ffmpeg.exe" "C:\tools\ffmpeg\bin\ffmpeg.exe" "%USERPROFILE%\AppData\Local\ffmpeg\bin\ffmpeg.exe") do (
         if exist "%%~p" (
-            set "FFMPEG_PATH=%%~dp"
-            echo   %GREEN%[✓]%RESET% Found at %%~p
-            goto :ffmpeg_found
+            set "FFMPEG_OK=yes"
+            set "PATH=%%~dp;%PATH%"
+            call :log ok "Found at %%~p"
         )
     )
+)
 
+if not "!FFMPEG_OK!"=="yes" (
     call :log fail "FFmpeg not found — install it and try again"
     echo(
     echo   Install options:
@@ -156,51 +128,38 @@ if errorlevel 1 (
     echo(
     pause
     exit /b 1
-
-    :ffmpeg_found
-) else (
-    for /f "delims=" %%i in ('where ffmpeg') do set "FFMPEG_BIN=%%~dpi"
-    set "FFMPEG_PATH=!FFMPEG_BIN!"
-    call :log ok   "FFmpeg found in PATH at !FFMPEG_PATH!"
 )
 
-set "PATH=%FFMPEG_PATH%;%PATH%"
-
-:: verify ffmpeg actually works
-echo   %CYAN%[*]%RESET% Verifying FFmpeg binary …
 ffmpeg -version >nul 2>&1
 if errorlevel 1 (
-    call :log fail "FFmpeg binary is present but not working — reinstall FFmpeg"
+    call :log fail "FFmpeg binary is present but not working — reinstall"
     pause
     exit /b 1
 )
-for /f "tokens=1-3" %%a in ('ffmpeg -version 2^>^&1 ^| findstr "ffmpeg version"') do set "FFMPEG_VER=%%b"
-echo   %GREEN%[✓]%RESET% FFmpeg ready — version %FFMPEG_VER%
+call :log ok   "FFmpeg ready"
 echo(
 
 :: ──────────────────────────────────────
-:: 6. check ffprobe (comes with FFmpeg)
+:: 7. check ffprobe
 :: ──────────────────────────────────────
 call :log info "Checking ffprobe …"
 where ffprobe >nul 2>&1
 if errorlevel 1 (
     call :log warn "ffprobe not found — some audio analysis may fail"
 ) else (
-    call :log ok   "ffprobe ready"
+    call :log ok "ffprobe ready"
 )
 echo(
 
 :: ──────────────────────────────────────
 :: summary
 :: ──────────────────────────────────────
-echo ┌──────────────────────────────────────────────────────────────────┐
-echo │  %BOLD%%GREEN%  All checks passed — launching services%RESET%                     │
-echo └──────────────────────────────────────────────────────────────────┘
+echo ================================================================
+echo   All checks passed — launching services
+echo ================================================================
 echo(
-echo   %CYAN%Python%RESET%      %BOLD%%VENV_DIR%\Scripts\python.exe%RESET%
-echo   %CYAN%Backend%RESET%     http://localhost:8000
-echo   %CYAN%Frontend%RESET%    http://localhost:5173
-echo   %CYAN%FFmpeg%RESET%      %FFMPEG_PATH%
+call :log info "Backend  → http://localhost:8000"
+call :log info "Frontend → http://localhost:5173"
 echo(
 
 :: ──────────────────────────────────────
@@ -210,52 +169,31 @@ call :log step "Launching services"
 echo(
 
 call :log info "Starting backend (uvicorn) …"
-echo   %CYAN%[*]%RESET% Command: %VENV_DIR%\Scripts\python.exe -m uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
-start "Trimora Backend" cmd /k "%VENV_DIR%\Scripts\python.exe -m uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000 && title Trimora Backend"
-timeout /t 2 /nobreak >nul
+start "Trimora Backend" /D "%ROOT%" "%VENV_DIR%\Scripts\python.exe" -m uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+if errorlevel 1 (
+    call :log fail "Failed to launch backend"
+    pause
+    exit /b 1
+)
 call :log ok   "Backend starting at http://localhost:8000"
+timeout /t 2 /nobreak >nul
 
 call :log info "Starting frontend (Vite) …"
-echo   %CYAN%[*]%RESET% Command: npx vite --host 0.0.0.0 --port 5173
-start "Trimora Frontend" cmd /k "cd /d "%FRONTEND_DIR%" && npx vite --host 0.0.0.0 --port 5173 && title Trimora Frontend"
+start "Trimora Frontend" /D "%FRONTEND_DIR%" cmd /k "npx vite --host 0.0.0.0 --port 5173"
 call :log ok   "Frontend starting at http://localhost:5173"
 echo(
 
-echo   %BOLD%%GREEN%[✓] Trimora is running%RESET%
-echo   %BOLD%%CYAN%    Backend  → http://localhost:8000%RESET%
-echo   %BOLD%%CYAN%    Frontend → http://localhost:5173%RESET%
+call :log ok "Services started — Trimora is running"
+call :log info "Backend  → http://localhost:8000"
+call :log info "Frontend → http://localhost:5173"
 echo(
-echo   %YELLOW%Close this window or press Ctrl+C to stop all services%RESET%
-echo(
-
 pause
 exit /b 0
 
 
 :: ──────────────────────────────────────
-:: helpers
+:: helper — simple echo wrapper
 :: ──────────────────────────────────────
 :log
-if "%~1"=="step" (
-    echo ═══════════════════════════════════════════════════════════════════
-    echo   %BOLD%%CYAN%%~2%RESET%
-    echo ═══════════════════════════════════════════════════════════════════
-    exit /b 0
-)
-if "%~1"=="info" (
-    echo   %CYAN%[*]%RESET% %~2
-    exit /b 0
-)
-if "%~1"=="ok" (
-    echo   %GREEN%[✓]%RESET% %~2
-    exit /b 0
-)
-if "%~1"=="warn" (
-    echo   %YELLOW%[!]%RESET% %~2
-    exit /b 0
-)
-if "%~1"=="fail" (
-    echo   %RED%[✗]%RESET% %~2
-    exit /b 0
-)
+echo   %~2
 exit /b 0
