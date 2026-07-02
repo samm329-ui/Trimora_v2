@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Clip Candidate",
+  "type": "object",
+  "required": ["id", "title", "hook_start", "hook_end", "body_start", "body_end", "ending_start", "ending_end", "duration", "total_score"],
+  "properties": {
+    "id": { "type": "string" },
+    "title": { "type": "string" },
+    "hook_start": { "type": "number", "minimum": 0 },
+    "hook_end": { "type": "number", "minimum": 0 },
+    "body_start": { "type": "number", "minimum": 0 },
+    "body_end": { "type": "number", "minimum": 0 },
+    "ending_start": { "type": "number", "minimum": 0 },
+    "ending_end": { "type": "number", "minimum": 0 },
+    "duration": { "type": "number", "minimum": 0 },
+    "hook_score": { "type": "number", "minimum": 0, "maximum": 1 },
+    "body_score": { "type": "number", "minimum": 0, "maximum": 1 },
+    "ending_score": { "type": "number", "minimum": 0, "maximum": 1 },
+    "flow_score": { "type": "number", "minimum": 0, "maximum": 1 },
+    "total_score": { "type": "number", "minimum": 0, "maximum": 1 },
+    "status": { "type": "string" },
+    "transcript_snippet": { "type": "string" }
+  }
+}
