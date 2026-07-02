@@ -1,0 +1,24 @@
+workers:
+  max_transcription_workers: 15
+  max_feature_workers: 15
+  max_clip_workers: 8
+
+chunking:
+  min_seconds: 30
+  max_seconds: 120
+  overlap_seconds: 2
+
+storage:
+  root: ./storage
+  jobs_root: ./storage/jobs
+
+job:
+  retry_count: 3
+  transcription_provider: "stub"
+  transcription_timeout_seconds: 600
+  export_timeout_seconds: 600
+
+thresholds:
+  min_segment_seconds: 1.2
+  min_candidate_score: 0.35
+  preview_top_k: 20
