@@ -153,20 +153,58 @@ if not defined FFMPEG_FOUND (
 
 :manual_install
 if not defined FFMPEG_FOUND (
-    echo   [X] Could not locate or install FFmpeg automatically.
+    echo   [X] Could not install via winget or Chocolatey.
     echo(
-    echo   Please install FFmpeg manually:
-    echo     1. Download from https://ffmpeg.org/download.html
-    echo     2. Add the bin\ folder to your system PATH
+    echo   Press any key to download FFmpeg directly (no admin needed).
+    echo   Will install to: %LOCALAPPDATA%\ffmpeg
     echo(
-    echo   Or use one of these commands in an admin terminal:
-    echo     winget install FFmpeg
-    echo     choco install ffmpeg
-    echo     scoop install ffmpeg
-    echo(
-    echo   After installing, restart this script.
     pause
-    exit /b 1
+
+    echo   [*] Downloading FFmpeg from gyan.dev ...
+    set "FFMPEG_ZIP=%TEMP%\ffmpeg-release.zip"
+    set "FFMPEG_URL=https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+
+    powershell -Command "try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '%FFMPEG_URL%' -OutFile '%FFMPEG_ZIP%' -UseBasicParsing; exit 0 } catch { Write-Host 'Download failed'; exit 1 }"
+    if errorlevel 1 (
+        echo   [X] Download failed. Check your internet connection.
+        echo   Please download manually from https://ffmpeg.org/download.html
+        pause
+        exit /b 1
+    )
+
+    echo   [*] Extracting FFmpeg ...
+    if exist "%LOCALAPPDATA%\ffmpeg" rmdir /s /q "%LOCALAPPDATA%\ffmpeg"
+    powershell -Command "try { Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory('%FFMPEG_ZIP%', '%LOCALAPPDATA%\ffmpeg'); exit 0 } catch { Write-Host 'Extract failed'; exit 1 }"
+    del "%FFMPEG_ZIP%" >nul 2>&1
+
+    :: Find the extracted ffmpeg.exe (it's in a versioned subfolder like ffmpeg-7.1-full_build)
+    set "FFMPEG_FOUND="
+    for /d %%d in ("%LOCALAPPDATA%\ffmpeg\ffmpeg-*") do (
+        if exist "%%d\bin\ffmpeg.exe" (
+            set "FFMPEG_FOUND=1"
+            set "FFMPEG_INSTALL_DIR=%%d\bin"
+            set "PATH=%%d\bin;%PATH%"
+        )
+    )
+
+    if not defined FFMPEG_FOUND (
+        :: Maybe extracted directly
+        if exist "%LOCALAPPDATA%\ffmpeg\bin\ffmpeg.exe" (
+            set "FFMPEG_FOUND=1"
+            set "FFMPEG_INSTALL_DIR=%LOCALAPPDATA%\ffmpeg\bin"
+            set "PATH=%LOCALAPPDATA%\ffmpeg\bin;%PATH%"
+        )
+    )
+
+    if not defined FFMPEG_FOUND (
+        echo   [X] Downloaded but couldn't find ffmpeg.exe in the extracted files.
+        echo   Please install manually from https://ffmpeg.org/download.html
+        pause
+        exit /b 1
+    )
+
+    echo   [V] FFmpeg installed to !FFMPEG_INSTALL_DIR!
+    echo(
 )
 
 :ffmpeg_ready
