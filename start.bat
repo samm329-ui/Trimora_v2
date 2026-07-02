@@ -156,7 +156,6 @@ if not defined FFMPEG_FOUND (
     echo   [X] Could not install via winget or Chocolatey.
     echo(
     echo   Press any key to download FFmpeg directly (no admin needed).
-    echo   Will install to: %LOCALAPPDATA%\ffmpeg
     echo(
     pause
 
@@ -167,13 +166,11 @@ if not defined FFMPEG_FOUND (
     powershell -Command "try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '%FFMPEG_URL%' -OutFile '%FFMPEG_ZIP%' -UseBasicParsing; exit 0 } catch { Write-Host 'Download failed'; exit 1 }"
     if errorlevel 1 (
         echo   [X] Download failed. Check your internet connection.
-        echo   Please download manually from https://ffmpeg.org/download.html
         pause
         exit /b 1
     )
 
-    echo   [*] Extracting FFmpeg ...
-    if exist "%LOCALAPPDATA%\ffmpeg" rmdir /s /q "%LOCALAPPDATA%\ffmpeg"
+    echo   [*] Extracting FFmpeg to %LOCALAPPDATA%\ffmpeg ...
     powershell -Command "try { Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory('%FFMPEG_ZIP%', '%LOCALAPPDATA%\ffmpeg'); exit 0 } catch { Write-Host 'Extract failed'; exit 1 }"
     del "%FFMPEG_ZIP%" >nul 2>&1
 
@@ -188,7 +185,6 @@ if not defined FFMPEG_FOUND (
     )
 
     if not defined FFMPEG_FOUND (
-        :: Maybe extracted directly
         if exist "%LOCALAPPDATA%\ffmpeg\bin\ffmpeg.exe" (
             set "FFMPEG_FOUND=1"
             set "FFMPEG_INSTALL_DIR=%LOCALAPPDATA%\ffmpeg\bin"
@@ -197,7 +193,7 @@ if not defined FFMPEG_FOUND (
     )
 
     if not defined FFMPEG_FOUND (
-        echo   [X] Downloaded but couldn't find ffmpeg.exe in the extracted files.
+        echo   [X] Downloaded but couldn't find ffmpeg.exe in extracted files.
         echo   Please install manually from https://ffmpeg.org/download.html
         pause
         exit /b 1
@@ -273,7 +269,6 @@ if not errorlevel 1 (
     exit /b 0
 )
 
-:: Scan winget packages directory recursively
 if exist "%LOCALAPPDATA%\Microsoft\WinGet\Packages\" (
     for /r "%LOCALAPPDATA%\Microsoft\WinGet\Packages" %%x in (ffmpeg.exe) do (
         if exist "%%x" (
@@ -284,14 +279,12 @@ if exist "%LOCALAPPDATA%\Microsoft\WinGet\Packages\" (
     )
 )
 
-:: Scan scoop
 if exist "%USERPROFILE%\scoop\apps\ffmpeg\current\bin\ffmpeg.exe" (
     set "FFMPEG_FOUND=1"
     set "PATH=%USERPROFILE%\scoop\apps\ffmpeg\current\bin;%PATH%"
     exit /b 0
 )
 
-:: Scan Program Files
 if exist "%ProgramFiles%\FFmpeg\bin\ffmpeg.exe" (
     set "FFMPEG_FOUND=1"
     set "PATH=%ProgramFiles%\FFmpeg\bin;%PATH%"
@@ -303,21 +296,18 @@ if exist "%ProgramFiles(x86)%\FFmpeg\bin\ffmpeg.exe" (
     exit /b 0
 )
 
-:: Scan C:\tools (Chocolatey)
 if exist "C:\tools\ffmpeg\bin\ffmpeg.exe" (
     set "FFMPEG_FOUND=1"
     set "PATH=C:\tools\ffmpeg\bin;%PATH%"
     exit /b 0
 )
 
-:: Scan local AppData
 if exist "%LOCALAPPDATA%\ffmpeg\bin\ffmpeg.exe" (
     set "FFMPEG_FOUND=1"
     set "PATH=%LOCALAPPDATA%\ffmpeg\bin;%PATH%"
     exit /b 0
 )
 
-:: Scan ProgramData (Chocolatey shims)
 if exist "%ProgramData%\chocolatey\lib\ffmpeg\tools\ffmpeg.exe" (
     set "FFMPEG_FOUND=1"
     set "PATH=%ProgramData%\chocolatey\lib\ffmpeg\tools;%PATH%"
