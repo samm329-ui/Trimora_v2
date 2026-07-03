@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -47,7 +49,7 @@ def _build_groq_client() -> Groq | None:
     return Groq(api_key=key)
 
 
-def _groq_transcribe(client: Groq, chunk_path: Path, chunk_id: str) -> TranscriptionResult:
+def _groq_transcribe(client: Groq, chunk_path: Path, chunk_id: str, start: float, end: float) -> TranscriptionResult:
     with open(chunk_path, "rb") as audio:
         translation = client.audio.transcriptions.create(
             model="whisper-large-v3-turbo",
@@ -60,8 +62,8 @@ def _groq_transcribe(client: Groq, chunk_path: Path, chunk_id: str) -> Transcrip
         confidence = sum(s.get("confidence", 0.0) for s in segments) / len(segments)
     return TranscriptionResult(
         chunk_id=chunk_id,
-        start=0.0,
-        end=0.0,
+        start=start,
+        end=end,
         text=translation.text or "",
         confidence=round(confidence, 4),
     )
@@ -80,7 +82,7 @@ def _build_gemini_client() -> google_genai.Client | None:
     return google_genai.Client(api_key=key)
 
 
-def _gemini_transcribe(client: google_genai.Client, chunk_path: Path, chunk_id: str) -> TranscriptionResult:
+def _gemini_transcribe(client: google_genai.Client, chunk_path: Path, chunk_id: str, start: float, end: float) -> TranscriptionResult:
     prompt = (
         "Transcribe this audio clip exactly. Return only the spoken text, no timestamps, no commentary."
     )
@@ -104,8 +106,8 @@ def _gemini_transcribe(client: google_genai.Client, chunk_path: Path, chunk_id: 
         os.unlink(tmp_path)
     return TranscriptionResult(
         chunk_id=chunk_id,
-        start=0.0,
-        end=0.0,
+        start=start,
+        end=end,
         text=text,
         confidence=0.65,
     )
@@ -125,6 +127,29 @@ def _stub_transcribe(chunk_id: str, start: float, end: float) -> TranscriptionRe
 
 
 # ---------------------------------------------------------------------------
+# Rate limiter
+# ---------------------------------------------------------------------------
+
+class _RateLimiter:
+    """Token-bucket rate limiter with enforced minimum delay between requests."""
+
+    def __init__(self, max_requests: int, window_seconds: float):
+        self._min_delay = window_seconds / max_requests
+        self._last_request: float = 0.0
+        self._lock = asyncio.Lock()
+
+    async def acquire(self) -> None:
+        async with self._lock:
+            now = time.monotonic()
+            elapsed = now - self._last_request
+            if elapsed < self._min_delay:
+                wait = self._min_delay - elapsed
+                logger.debug(f"Rate limiter: waiting {wait:.1f}s")
+                await asyncio.sleep(wait)
+            self._last_request = time.monotonic()
+
+
+# ---------------------------------------------------------------------------
 # Main service
 # ---------------------------------------------------------------------------
 
@@ -132,6 +157,7 @@ class TranscriptionService:
     def __init__(self) -> None:
         self._groq: Groq | None = None
         self._gemini: google_genai.Client | None = None
+        self._rate_limiter: _RateLimiter | None = None
         provider = settings.transcription_provider
 
         if provider == "groq":
@@ -145,9 +171,18 @@ class TranscriptionService:
                 logger.warning("GEMINI_API_KEY not set, falling back to Groq")
                 self._groq = _build_groq_client()
 
-    async def transcribe_chunk(self, chunk_id: str, chunk_path: Path, start: float, end: float) -> TranscriptionResult:
+        # Rate limit Groq: 15 req/min with 4s minimum gap (free tier is 20/min)
         if self._groq is not None:
-            return _groq_transcribe(self._groq, chunk_path, chunk_id)
+            self._rate_limiter = _RateLimiter(max_requests=15, window_seconds=60)
+
+    async def transcribe_chunk(self, chunk_id: str, chunk_path: Path, start: float, end: float) -> TranscriptionResult:
+        if self._rate_limiter is not None:
+            await self._rate_limiter.acquire()
+        return await asyncio.to_thread(self._transcribe_sync, chunk_id, chunk_path, start, end)
+
+    def _transcribe_sync(self, chunk_id: str, chunk_path: Path, start: float, end: float) -> TranscriptionResult:
+        if self._groq is not None:
+            return _groq_transcribe(self._groq, chunk_path, chunk_id, start, end)
         if self._gemini is not None:
-            return _gemini_transcribe(self._gemini, chunk_path, chunk_id)
+            return _gemini_transcribe(self._gemini, chunk_path, chunk_id, start, end)
         return _stub_transcribe(chunk_id, start, end)
