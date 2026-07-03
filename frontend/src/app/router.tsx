@@ -19,6 +19,7 @@ export function AppRouter() {
   const [uploading, setUploading] = useState(false);
 
   async function handleUpload(file: File) {
+    jobState.setJobId(undefined);
     setUploading(true);
     try {
       const res = await (await import("../services/uploadService")).uploadVideo(file);
