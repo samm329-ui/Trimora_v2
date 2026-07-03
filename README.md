@@ -87,41 +87,41 @@
 
 ```mermaid
 flowchart LR
-    subgraph Frontend ["🖥️ Frontend"]
-        U["👤 User"] --> FE["⚛️ React App"]
+    subgraph Frontend ["Frontend"]
+        U["User"] --> FE["React App"]
     end
 
-    subgraph Backend ["⚙️ Backend"]
-        FE -->|"POST /api/process"| API["🚀 FastAPI"]
-        API --> ORC["🎯 Orchestrator"]
-        ORC --> PIPE["🔄 Production Pipeline"]
+    subgraph Backend ["Backend"]
+        FE -->|POST /api/process| API["FastAPI"]
+        API --> ORC["Orchestrator"]
+        ORC --> PIPE["Production Pipeline"]
     end
 
-    subgraph Pipeline ["📡 Pipeline"]
-        PIPE --> EXT["🎵 Audio Extraction"]
-        EXT --> CHUNK["📊 Chunk Planning"]
-        CHUNK --> SCHED["📋 Scheduler"]
-        SCHED --> WP["👷 Worker Pool"]
-        WP --> TRANS["🗣️ Transcription"]
-        TRANS --> MERGE["🔗 Transcript Merge"]
-        MERGE --> SEG["✂️ Segmentation"]
-        SEG --> FEAT["🔍 Feature Extraction"]
-        FEAT --> RANK["🏆 Ranking Engine"]
-        RANK --> PREV["👁️ Preview"]
-        RANK --> LEARN["📈 Learning"]
+    subgraph Pipeline ["Pipeline"]
+        PIPE --> EXT["Audio Extraction"]
+        EXT --> CHUNK["Chunk Planning"]
+        CHUNK --> SCHED["Scheduler"]
+        SCHED --> WP["Worker Pool"]
+        WP --> TRANS["Transcription"]
+        TRANS --> MERGE["Transcript Merge"]
+        MERGE --> SEG["Segmentation"]
+        SEG --> FEAT["Feature Extraction"]
+        FEAT --> RANK["Ranking Engine"]
+        RANK --> PREV["Preview"]
+        RANK --> LEARN["Learning"]
     end
 
-    subgraph ExternalAPIs ["🌐 External APIs"]
-        TRANS -->|"whisper"| GROQ["☁️ Groq API"]
-        TRANS -->|"fallback"| GEMINI["🔮 Gemini API"]
+    subgraph ExternalAPIs ["External APIs"]
+        TRANS -->|whisper| GROQ["Groq API"]
+        TRANS -->|fallback| GEMINI["Gemini API"]
     end
 
-    subgraph Storage ["💾 Storage"]
-        PIPE -->|"read/write"| STORE[("🗄️ Local Storage")]
+    subgraph Storage ["Storage"]
+        PIPE -->|read/write| STORE[("Local Storage")]
     end
 
-    PREV -->|"GET /api/preview"| FE
-    LEARN -->|"async"| STORE
+    PREV -->|GET /api/preview| FE
+    LEARN -->|async| STORE
 ```
 
 ---
@@ -182,40 +182,40 @@ trimora/
 
 ```mermaid
 flowchart TB
-    START(["🟢 Start"]) --> CHK{"🔍 FFmpeg installed?"}
-    CHK -->|"❌ No"| FAIL1["🚫 Fail: ffmpeg not found"]
-    CHK -->|"✅ Yes"| EXT["🎵 Extract Audio"]
+    START([Start]) --> CHK{FFmpeg installed?}
+    CHK -->|No| FAIL1[Fail: ffmpeg not found]
+    CHK -->|Yes| EXT[Extract Audio]
 
-    EXT --> PLAN["📊 Plan Chunks"]
-    PLAN --> SPLIT["✂️ Split Audio Chunks"]
+    EXT --> PLAN[Plan Chunks]
+    PLAN --> SPLIT[Split Audio Chunks]
 
-    SPLIT --> TRANS["🗣️ Parallel Transcription"]
-    TRANS --> RATE{"⏱️ Rate Limit"}
-    RATE -->|"Groq 15/min"| GROQ_CALL["☁️ Groq API"]
-    RATE -->|"Fallback"| GEMINI_CALL["🔮 Gemini API"]
-    RATE -->|"No key"| STUB_CALL["📝 Stub Transcription"]
+    SPLIT --> TRANS[Parallel Transcription]
+    TRANS --> RATE{Rate Limit}
+    RATE -->|Groq 15/min| GROQ_CALL[Groq API]
+    RATE -->|Fallback| GEMINI_CALL[Gemini API]
+    RATE -->|No key| STUB_CALL[Stub Transcription]
 
-    GROQ_CALL --> MERGE["🔗 Merge Transcripts"]
+    GROQ_CALL --> MERGE[Merge Transcripts]
     GEMINI_CALL --> MERGE
     STUB_CALL --> MERGE
 
-    MERGE --> SEG["✂️ Atomic Segmentation"]
-    SEG --> FEAT["🔍 Feature Extraction"]
+    MERGE --> SEG[Atomic Segmentation]
+    SEG --> FEAT[Feature Extraction]
 
-    FEAT --> GRAPH["🕸️ Knowledge Graph"]
-    GRAPH --> SCORE["🎯 Scoring & Candidates"]
+    FEAT --> GRAPH[Knowledge Graph]
+    GRAPH --> SCORE[Scoring & Candidates]
 
-    SCORE --> RANK["🏆 13-Stage Ranking"]
-    RANK --> OPT["⚡ MMR Optimization"]
+    SCORE --> RANK[13-Stage Ranking]
+    RANK --> OPT[MMR Optimization]
 
-    OPT --> PREV["👁️ Preview Manifest"]
-    PREV --> EXPORT["🎬 Render MP4"]
-    EXPORT --> LEARN["📈 Analytics & Learning"]
-    LEARN --> DONE(["🟢 Complete"])
+    OPT --> PREV[Preview Manifest]
+    PREV --> EXPORT[Render MP4]
+    EXPORT --> LEARN[Analytics & Learning]
+    LEARN --> DONE([Complete])
 
-    EXT -->|"❌ Error"| FAIL2["🚫 Fail: extraction error"]
-    TRANS -->|"❌ Error"| FAIL3["🚫 Fail: transcription error"]
-    RANK -->|"❌ Error"| FAIL4["🚫 Fail: ranking error"]
+    EXT -->|Error| FAIL2[Fail: extraction error]
+    TRANS -->|Error| FAIL3[Fail: transcription error]
+    RANK -->|Error| FAIL4[Fail: ranking error]
 
     style START fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
     style DONE fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
@@ -527,13 +527,13 @@ Downloads the rendered MP4 file.
 
 ```mermaid
 sequenceDiagram
-    participant U as 👤 User
-    participant F as 🖥️ Frontend
-    participant A as ⚡ FastAPI
-    participant O as 🎯 Orchestrator
-    participant P as 🔄 Pipeline
-    participant T as 🗣️ Transcription
-    participant S as 💾 Storage
+    participant U as User
+    participant F as Frontend
+    participant A as FastAPI
+    participant O as Orchestrator
+    participant P as Pipeline
+    participant T as Transcription
+    participant S as Storage
 
     U->>F: Select video file
     F->>A: POST /api/process (multipart)
@@ -584,23 +584,23 @@ Trimora implements graceful degradation at multiple levels. If a higher-priority
 
 ```mermaid
 flowchart TD
-    START["🗣️ Transcription Request"] --> GROQ{"🔑 Groq API Key set?"}
-    GROQ -->|"✅ Yes"| GROQ_CLIENT["☁️ Groq Client"]
-    GROQ -->|"❌ No"| GEMINI{"🔑 Gemini API Key set?"}
-    GEMINI -->|"✅ Yes"| GEMINI_CLIENT["🔮 Gemini Client"]
-    GEMINI -->|"❌ No"| STUB["📝 Stub Transcription"]
+    START["Transcription Request"] --> GROQ{"Groq API Key set?"}
+    GROQ -->|Yes| GROQ_CLIENT["Groq Client"]
+    GROQ -->|No| GEMINI{"Gemini API Key set?"}
+    GEMINI -->|Yes| GEMINI_CLIENT["Gemini Client"]
+    GEMINI -->|No| STUB["Stub Transcription"]
 
-    GROQ_CLIENT --> RATE{"⏱️ Rate Limiter"}
-    RATE -->|"Under limit"| GROQ_CALL["📡 Groq API Call"]
-    RATE -->|"Wait"| RATE
+    GROQ_CLIENT --> RATE{"Rate Limiter"}
+    RATE -->|Under limit| GROQ_CALL["Groq API Call"]
+    RATE -->|Wait| RATE
 
-    GROQ_CALL -->|"✅ Success"| RESULT["📄 Transcription Result"]
-    GROQ_CALL -->|"⚠️ 429 Rate Limit"| RETRY["🔄 Auto-retry with backoff"]
+    GROQ_CALL -->|Success| RESULT["Transcription Result"]
+    GROQ_CALL -->|429 Rate Limit| RETRY["Auto-retry with backoff"]
     RETRY --> RATE
 
-    GEMINI_CLIENT --> GEMINI_CALL["📡 Gemini API Call"]
-    GEMINI_CALL -->|"✅ Success"| RESULT
-    GEMINI_CALL -->|"❌ Error"| STUB
+    GEMINI_CLIENT --> GEMINI_CALL["Gemini API Call"]
+    GEMINI_CALL -->|Success| RESULT
+    GEMINI_CALL -->|Error| STUB
 
     STUB --> RESULT
 
@@ -671,16 +671,16 @@ class TranscriptionService:
 
 ```mermaid
 flowchart LR
-    C["🎯 Candidates"] --> HC["🚫 Hard Constraints"]
-    HC --> NV["📖 Narrative Validation"]
-    NV --> CTX["🔗 Context Coherence"]
-    CTX --> HQ["🎣 Hook Quality"]
-    HQ --> ID["📈 Information Density"]
-    ID --> RP["👁️ Retention Prediction"]
-    RP --> ND["🆕 Novelty/Dedup"]
-    ND --> FINAL["⭐ Final Score"]
-    FINAL --> MMR["⚡ MMR Optimization"]
-    MMR --> RANKED["🏆 Ranked Clips"]
+    C["Candidates"] --> HC["Hard Constraints"]
+    HC --> NV["Narrative Validation"]
+    NV --> CTX["Context Coherence"]
+    CTX --> HQ["Hook Quality"]
+    HQ --> ID["Information Density"]
+    ID --> RP["Retention Prediction"]
+    RP --> ND["Novelty/Dedup"]
+    ND --> FINAL["Final Score"]
+    FINAL --> MMR["MMR Optimization"]
+    MMR --> RANKED["Ranked Clips"]
 
     style HC fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
     style NV fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
@@ -734,26 +734,26 @@ The frontend is a **React SPA** with 5 pages and a dark-themed UI.
 
 ```mermaid
 flowchart TB
-    subgraph Pages ["📄 Pages"]
-        UP["📤 Upload Page"]
-        SP["📊 Status Page"]
-        PP["👁️ Preview Page"]
-        RP["📋 Results Page"]
-        SET["⚙️ Settings Page"]
+    subgraph Pages ["Pages"]
+        UP["Upload Page"]
+        SP["Status Page"]
+        PP["Preview Page"]
+        RP["Results Page"]
+        SET["Settings Page"]
     end
 
-    subgraph State ["💾 State"]
-        JS["🔄 jobStore - Polling"]
-        PS["✅ previewStore - Selection"]
-        UI["🎨 uiStore - Theme"]
+    subgraph State ["State"]
+        JS["jobStore - Polling"]
+        PS["previewStore - Selection"]
+        UI["uiStore - Theme"]
     end
 
-    UP -->|"📤 Upload"| JS
-    JS -->|"🔄 Poll /api/status"| SP
-    JS -->|"📥 Fetch /api/preview"| PP
-    PP -->|"✅ Select clips"| PS
-    PP -->|"⬇️ Download"| RP
-    SET -->|"⚙️ Configure"| UI
+    UP -->|Upload| JS
+    JS -->|Poll /api/status| SP
+    JS -->|Fetch /api/preview| PP
+    PP -->|Select clips| PS
+    PP -->|Download| RP
+    SET -->|Configure| UI
 ```
 
 ### 📄 Pages
