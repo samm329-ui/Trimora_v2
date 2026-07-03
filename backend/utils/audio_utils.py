@@ -25,16 +25,16 @@ def build_chunk_plan(
 
     if duration_seconds < short_threshold:
         chunk = 30
-        workers = 5
+        workers = 3
     elif duration_seconds < medium_threshold:
         chunk = 45
-        workers = 10
+        workers = 5
     else:
         chunk = 90
-        workers = 15
+        workers = 5
 
     chunk = int(max(MIN_CHUNK_SECONDS, min(MAX_CHUNK_SECONDS, round(chunk * density_bias))))
-    workers = int(max(1, min(15, workers)))
+    workers = int(max(1, min(5, workers)))
 
     overlap = max(DEFAULT_OVERLAP_SECONDS, round(DEFAULT_OVERLAP_SECONDS + (1 - speech_density) * 2))
     return ChunkPlan(chunk_seconds=chunk, overlap_seconds=overlap, worker_limit=workers)
