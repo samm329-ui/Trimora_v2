@@ -10,6 +10,7 @@ venv/
 
 # Node
 node_modules/
+*.tsbuildinfo
 
 # Test cache
 .pytest_cache/
