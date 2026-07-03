@@ -7,6 +7,8 @@ chunking:
   min_seconds: 30
   max_seconds: 120
   overlap_seconds: 2
+  bitrate: "64k"
+  keep_chunks: true
 
 storage:
   root: ./storage
