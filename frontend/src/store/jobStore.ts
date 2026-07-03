@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { JobRecord, PreviewManifest } from "../types/job";
 import { getJobStatus, getJobResult } from "../services/jobService";
 import { getPreview } from "../services/previewService";
@@ -10,9 +10,10 @@ export function useJobState(initialJobId?: string) {
   const [resultPath, setResultPath] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const pollingRef = useRef(true);
 
-  async function refresh(currentJobId = jobId) {
-    if (!currentJobId) return;
+  async function refresh(currentJobId = jobId): Promise<boolean> {
+    if (!currentJobId) return false;
     setLoading(true);
     setError(null);
     try {
@@ -32,8 +33,11 @@ export function useJobState(initialJobId?: string) {
           setResultPath(result.export_path);
         }
       }
+      return true;
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load job");
+      const msg = err instanceof Error ? err.message : "Failed to load job";
+      setError(msg);
+      return !msg.includes("404");
     } finally {
       setLoading(false);
     }
@@ -41,11 +45,17 @@ export function useJobState(initialJobId?: string) {
 
   useEffect(() => {
     if (!jobId) return;
+    pollingRef.current = true;
     refresh(jobId);
-    const timer = window.setInterval(() => {
-      refresh(jobId);
+    const timer = window.setInterval(async () => {
+      if (!pollingRef.current) return;
+      const ok = await refresh(jobId);
+      if (!ok) pollingRef.current = false;
     }, 2500);
-    return () => window.clearInterval(timer);
+    return () => {
+      pollingRef.current = false;
+      window.clearInterval(timer);
+    };
   }, [jobId]);
 
   return {
