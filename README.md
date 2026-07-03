@@ -1,33 +1,42 @@
-# Trimora
+# 🎬 Trimora
 
-> AI-powered platform that transforms long-form videos into engaging short-form clips using an audio-first, highly parallel processing pipeline.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-009688.svg)](https://fastapi.tiangolo.com/)
+[![React 18](https://img.shields.io/badge/React-18-61DAFB.svg)](https://react.dev/)
+[![FFmpeg](https://img.shields.io/badge/FFmpeg-FFmpeg-orange.svg)](https://ffmpeg.org/)
 
----
-
-## Table of Contents
-
-- [Overview](#overview)
-- [Features](#features)
-- [Tech Stack](#tech-stack)
-- [Architecture](#architecture)
-- [Project Structure](#project-structure)
-- [Pipeline](#pipeline)
-- [Job Lifecycle](#job-lifecycle)
-- [API Reference](#api-reference)
-- [Fallback Mechanisms](#fallback-mechanisms)
-- [Ranking Engine](#ranking-engine)
-- [Frontend](#frontend)
-- [Configuration](#configuration)
-- [Setup](#setup)
-- [Docker](#docker)
-- [Storage](#storage)
-- [License](#license)
+> 🚀 **AI-powered platform** that transforms long-form videos into engaging short-form clips using an audio-first, highly parallel processing pipeline.
 
 ---
 
-## Overview
+<details>
+<summary>📋 <text style="color: #10b981;">Quick Navigation</text></summary>
 
-Trimora takes a long video (podcast, lecture, interview) and automatically extracts the best short-form clips. The pipeline processes audio independently of video, using parallel transcription, multi-signal feature extraction, semantic embeddings, and a 13-stage ranking engine to identify the most engaging moments.
+- [🎯 Overview](#-overview)
+- [✨ Features](#-features)
+- [🛠️ Tech Stack](#%EF%B8%8F-tech-stack)
+- [🏗️ Architecture](#%EF%B8%8F-architecture)
+- [📁 Project Structure](#-project-structure)
+- [⚙️ Pipeline](#%EF%B8%8F-pipeline)
+- [🔄 Job Lifecycle](#-job-lifecycle)
+- [📡 API Reference](#-api-reference)
+- [🔀 Fallback Mechanisms](#-fallback-mechanisms)
+- [🏆 Ranking Engine](#-ranking-engine)
+- [🖥️ Frontend](#%EF%B8%8F-frontend)
+- [⚙️ Configuration](#%EF%B8%8F-configuration)
+- [🚀 Setup](#-setup)
+- [🐳 Docker](#-docker)
+- [💾 Storage](#-storage)
+- [📜 License](#-license)
+
+</details>
+
+---
+
+## 🎯 Overview
+
+<text style="color: #3b82f6;">Trimora takes a long video (podcast, lecture, interview) and automatically extracts the best short-form clips. The pipeline processes audio independently of video, using parallel transcription, multi-signal feature extraction, semantic embeddings, and a 13-stage ranking engine to identify the most engaging moments.</text>
 
 **Processing time estimates** (with rate-limited transcription):
 
@@ -40,22 +49,26 @@ Trimora takes a long video (podcast, lecture, interview) and automatically extra
 
 ---
 
-## Features
+## ✨ Features
 
-- Audio-first processing (extract audio once, process independently)
-- Parallel transcription with rate limiting (Groq/Gemini)
-- Adaptive chunking based on video duration and speech density
-- Multi-signal feature extraction (audio energy, text density, structure, patterns)
-- 13-stage ranking engine with semantic deduplication
-- MMR-based global optimization for clip diversity
-- FFmpeg-based clip rendering
-- Learning pipeline for continuous improvement
-- Real-time progress tracking via polling
-- Dark-themed React frontend
+<text style="color: #8b5cf6;">Key capabilities that make Trimora powerful:</text>
+
+| Feature | Description |
+|---|---|
+| 🎵 **Audio-First Processing** | Extract audio once, process independently |
+| ⚡ **Parallel Transcription** | Rate-limited concurrent processing (Groq/Gemini) |
+| 📊 **Adaptive Chunking** | Dynamic chunk sizes based on video duration |
+| 🔍 **Multi-Signal Extraction** | Audio energy, text density, structure, patterns |
+| 🏆 **13-Stage Ranking** | Semantic deduplication with MMR optimization |
+| 🎯 **MMR Optimization** | Quality + diversity balance for clip selection |
+| 🎬 **FFmpeg Rendering** | Direct MP4 clip export |
+| 📈 **Learning Pipeline** | Continuous improvement from analytics |
+| 🔄 **Real-Time Tracking** | WebSocket polling with progress updates |
+| 🌙 **Dark Theme UI** | Modern React frontend with dark mode |
 
 ---
 
-## Tech Stack
+## 🛠️ Tech Stack
 
 | Layer | Technology |
 |---|---|
@@ -70,50 +83,50 @@ Trimora takes a long video (podcast, lecture, interview) and automatically extra
 
 ---
 
-## Architecture
+## 🏗️ Architecture
 
 ```mermaid
 flowchart LR
-    subgraph Frontend
-        U[User] --> FE[React App]
+    subgraph Frontend ["🖥️ Frontend"]
+        U["👤 User"] --> FE["⚛️ React App"]
     end
 
-    subgraph Backend
-        FE -->|POST /api/process| API[FastAPI]
-        API --> ORC[Orchestrator]
-        ORC --> PIPE[Production Pipeline]
+    subgraph Backend ["⚙️ Backend"]
+        FE -->|"POST /api/process"| API["🚀 FastAPI"]
+        API --> ORC["🎯 Orchestrator"]
+        ORC --> PIPE["🔄 Production Pipeline"]
     end
 
-    subgraph Pipeline
-        PIPE --> EXT[Audio Extraction]
-        EXT --> CHUNK[Chunk Planning]
-        CHUNK --> SCHED[Scheduler]
-        SCHED --> WP[Worker Pool]
-        WP --> TRANS[Transcription]
-        TRANS --> MERGE[Transcript Merge]
-        MERGE --> SEG[Segmentation]
-        SEG --> FEAT[Feature Extraction]
-        FEAT --> RANK[Ranking Engine]
-        RANK --> PREV[Preview]
-        RANK --> LEARN[Learning]
+    subgraph Pipeline ["📡 Pipeline"]
+        PIPE --> EXT["🎵 Audio Extraction"]
+        EXT --> CHUNK["📊 Chunk Planning"]
+        CHUNK --> SCHED["📋 Scheduler"]
+        SCHED --> WP["👷 Worker Pool"]
+        WP --> TRANS["🗣️ Transcription"]
+        TRANS --> MERGE["🔗 Transcript Merge"]
+        MERGE --> SEG["✂️ Segmentation"]
+        SEG --> FEAT["🔍 Feature Extraction"]
+        FEAT --> RANK["🏆 Ranking Engine"]
+        RANK --> PREV["👁️ Preview"]
+        RANK --> LEARN["📈 Learning"]
     end
 
-    subgraph External APIs
-        TRANS -->|whisper| GROQ[Groq API]
-        TRANS -->|fallback| GEMINI[Gemini API]
+    subgraph ExternalAPIs ["🌐 External APIs"]
+        TRANS -->|"whisper"| GROQ["☁️ Groq API"]
+        TRANS -->|"fallback"| GEMINI["🔮 Gemini API"]
     end
 
-    subgraph Storage
-        PIPE -->|read/write| STORE[(Local Storage)]
+    subgraph Storage ["💾 Storage"]
+        PIPE -->|"read/write"| STORE[("🗄️ Local Storage")]
     end
 
-    PREV -->|GET /api/preview| FE
-    LEARN -->|async| STORE
+    PREV -->|"GET /api/preview"| FE
+    LEARN -->|"async"| STORE
 ```
 
 ---
 
-## Project Structure
+## 📁 Project Structure
 
 ```text
 trimora/
@@ -163,56 +176,61 @@ trimora/
 
 ---
 
-## Pipeline
+## ⚙️ Pipeline
 
-The production pipeline processes videos through 12 sequential stages. Each stage has cancellation checks and error handling.
+<text style="color: #10b981;">The production pipeline processes videos through **12 sequential stages**. Each stage has cancellation checks and error handling.</text>
 
 ```mermaid
 flowchart TB
-    START([Start]) --> CHK{FFmpeg installed?}
-    CHK -->|No| FAIL1[Fail: ffmpeg not found]
-    CHK -->|Yes| EXT[Extract Audio]
+    START(["🟢 Start"]) --> CHK{"🔍 FFmpeg installed?"}
+    CHK -->|"❌ No"| FAIL1["🚫 Fail: ffmpeg not found"]
+    CHK -->|"✅ Yes"| EXT["🎵 Extract Audio"]
 
-    EXT --> PLAN[Plan Chunks]
-    PLAN --> SPLIT[Split Audio Chunks]
+    EXT --> PLAN["📊 Plan Chunks"]
+    PLAN --> SPLIT["✂️ Split Audio Chunks"]
 
-    SPLIT --> TRANS[Parallel Transcription]
-    TRANS --> RATE{Rate Limit}
-    RATE -->|Groq 15/min| GROQ_CALL[Groq API]
-    RATE -->|Fallback| GEMINI_CALL[Gemini API]
-    RATE -->|No key| STUB_CALL[Stub Transcription]
+    SPLIT --> TRANS["🗣️ Parallel Transcription"]
+    TRANS --> RATE{"⏱️ Rate Limit"}
+    RATE -->|"Groq 15/min"| GROQ_CALL["☁️ Groq API"]
+    RATE -->|"Fallback"| GEMINI_CALL["🔮 Gemini API"]
+    RATE -->|"No key"| STUB_CALL["📝 Stub Transcription"]
 
-    GROQ_CALL --> MERGE[Merge Transcripts]
+    GROQ_CALL --> MERGE["🔗 Merge Transcripts"]
     GEMINI_CALL --> MERGE
     STUB_CALL --> MERGE
 
-    MERGE --> SEG[Atomic Segmentation]
-    SEG --> FEAT[Feature Extraction]
+    MERGE --> SEG["✂️ Atomic Segmentation"]
+    SEG --> FEAT["🔍 Feature Extraction"]
 
-    FEAT --> GRAPH[Knowledge Graph]
-    GRAPH --> SCORE[Scoring & Candidates]
+    FEAT --> GRAPH["🕸️ Knowledge Graph"]
+    GRAPH --> SCORE["🎯 Scoring & Candidates"]
 
-    SCORE --> RANK[13-Stage Ranking]
-    RANK --> OPT[MMR Optimization]
+    SCORE --> RANK["🏆 13-Stage Ranking"]
+    RANK --> OPT["⚡ MMR Optimization"]
 
-    OPT --> PREV[Preview Manifest]
-    PREV --> EXPORT[Render MP4]
-    EXPORT --> LEARN[Analytics & Learning]
-    LEARN --> DONE([Complete])
+    OPT --> PREV["👁️ Preview Manifest"]
+    PREV --> EXPORT["🎬 Render MP4"]
+    EXPORT --> LEARN["📈 Analytics & Learning"]
+    LEARN --> DONE(["🟢 Complete"])
 
-    EXT -->|Error| FAIL2[Fail: extraction error]
-    TRANS -->|Error| FAIL3[Fail: transcription error]
-    RANK -->|Error| FAIL4[Fail: ranking error]
+    EXT -->|"❌ Error"| FAIL2["🚫 Fail: extraction error"]
+    TRANS -->|"❌ Error"| FAIL3["🚫 Fail: transcription error"]
+    RANK -->|"❌ Error"| FAIL4["🚫 Fail: ranking error"]
 
-    style START fill:#10b981,color:#fff
-    style DONE fill:#10b981,color:#fff
-    style FAIL1 fill:#ef4444,color:#fff
-    style FAIL2 fill:#ef4444,color:#fff
-    style FAIL3 fill:#ef4444,color:#fff
-    style FAIL4 fill:#ef4444,color:#fff
+    style START fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
+    style DONE fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
+    style FAIL1 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
+    style FAIL2 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
+    style FAIL3 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
+    style FAIL4 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
+    style CHK fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
+    style RATE fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
+    style GROQ_CALL fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
+    style GEMINI_CALL fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
+    style STUB_CALL fill:#6b7280,color:#fff,stroke:#4b5563,stroke-width:2px
 ```
 
-### Pipeline Stages
+### 📋 Pipeline Stages
 
 | # | Stage | Status | Progress | Description |
 |---|---|---|---|---|
@@ -233,7 +251,7 @@ flowchart TB
 
 ---
 
-## Job Lifecycle
+## 🔄 Job Lifecycle
 
 ```mermaid
 stateDiagram-v2
@@ -282,17 +300,17 @@ stateDiagram-v2
 
 ---
 
-## API Reference
+## 📡 API Reference
 
-### Base URL
+### 🌐 Base URL
 
 ```
 http://localhost:8000
 ```
 
-### Endpoints
+### 📍 Endpoints
 
-#### Health Check
+#### 🏥 Health Check
 
 ```
 GET /api/health
@@ -308,7 +326,7 @@ GET /api/health
 
 ---
 
-#### Process Video
+#### 🎬 Process Video
 
 ```
 POST /api/process
@@ -319,11 +337,11 @@ Content-Type: multipart/form-data
 
 | Name | Type | Required | Description |
 |---|---|---|---|
-| `file` | File | Yes | Video file (.mp4, .mov, .mkv, .webm, .m4v) |
+| `file` | File | ✅ Yes | Video file (.mp4, .mov, .mkv, .webm, .m4v) |
 
 **Constraints:**
-- Max file size: 2 GB
-- Allowed formats: `.mp4`, `.mov`, `.mkv`, `.webm`, `.m4v`
+- 📦 Max file size: 2 GB
+- 🎞️ Allowed formats: `.mp4`, `.mov`, `.mkv`, `.webm`, `.m4v`
 
 **Response:**
 ```json
@@ -335,12 +353,12 @@ Content-Type: multipart/form-data
 ```
 
 **Errors:**
-- `400` - Invalid file type or empty file
-- `413` - File too large (over 2 GB)
+- ⚠️ `400` - Invalid file type or empty file
+- ⚠️ `413` - File too large (over 2 GB)
 
 ---
 
-#### Get Job Status
+#### 📊 Get Job Status
 
 ```
 GET /api/status/{job_id}
@@ -368,11 +386,11 @@ GET /api/status/{job_id}
 ```
 
 **Errors:**
-- `404` - Job not found
+- ⚠️ `404` - Job not found
 
 ---
 
-#### Get Preview
+#### 👁️ Get Preview
 
 ```
 GET /api/preview/{job_id}
@@ -412,11 +430,11 @@ GET /api/preview/{job_id}
 ```
 
 **Errors:**
-- `404` - Preview not ready or job not found
+- ⚠️ `404` - Preview not ready or job not found
 
 ---
 
-#### Get Result
+#### 📋 Get Result
 
 ```
 GET /api/result/{job_id}
@@ -434,7 +452,7 @@ GET /api/result/{job_id}
 
 ---
 
-#### Retry Job
+#### 🔄 Retry Job
 
 ```
 POST /api/retry/{job_id}
@@ -452,7 +470,7 @@ Retries a failed or cancelled job from the beginning.
 
 ---
 
-#### Cancel Job
+#### ❌ Cancel Job
 
 ```
 POST /api/cancel/{job_id}
@@ -470,7 +488,7 @@ Cancels a running job. The pipeline checks for cancellation between each stage.
 
 ---
 
-#### Export / Check Export
+#### 🎞️ Export / Check Export
 
 ```
 POST /api/export/{job_id}
@@ -488,7 +506,7 @@ Triggers or checks export readiness.
 
 ---
 
-#### Download Export
+#### ⬇️ Download Export
 
 ```
 GET /api/download/{job_id}
@@ -501,21 +519,21 @@ Downloads the rendered MP4 file.
 **Filename:** `trimora_reel_001.mp4`
 
 **Errors:**
-- `404` - Export not found
+- ⚠️ `404` - Export not found
 
 ---
 
-### API Flow Diagram
+### 🔗 API Flow Diagram
 
 ```mermaid
 sequenceDiagram
-    participant U as User
-    participant F as Frontend
-    participant A as FastAPI
-    participant O as Orchestrator
-    participant P as Pipeline
-    participant T as Transcription
-    participant S as Storage
+    participant U as 👤 User
+    participant F as 🖥️ Frontend
+    participant A as ⚡ FastAPI
+    participant O as 🎯 Orchestrator
+    participant P as 🔄 Pipeline
+    participant T as 🗣️ Transcription
+    participant S as 💾 Storage
 
     U->>F: Select video file
     F->>A: POST /api/process (multipart)
@@ -558,37 +576,41 @@ sequenceDiagram
 
 ---
 
-## Fallback Mechanisms
+## 🔀 Fallback Mechanisms
 
 Trimora implements graceful degradation at multiple levels. If a higher-priority component is unavailable, the system automatically falls back to alternatives.
 
-### Transcription Provider Fallback
+### 🎙️ Transcription Provider Fallback
 
 ```mermaid
 flowchart TD
-    START[Transcription Request] --> GROQ{Groq API Key set?}
-    GROQ -->|Yes| GROQ_CLIENT[Groq Client]
-    GROQ -->|No| GEMINI{Gemini API Key set?}
-    GEMINI -->|Yes| GEMINI_CLIENT[Gemini Client]
-    GEMINI -->|No| STUB[Stub Transcription]
+    START["🗣️ Transcription Request"] --> GROQ{"🔑 Groq API Key set?"}
+    GROQ -->|"✅ Yes"| GROQ_CLIENT["☁️ Groq Client"]
+    GROQ -->|"❌ No"| GEMINI{"🔑 Gemini API Key set?"}
+    GEMINI -->|"✅ Yes"| GEMINI_CLIENT["🔮 Gemini Client"]
+    GEMINI -->|"❌ No"| STUB["📝 Stub Transcription"]
 
-    GROQ_CLIENT --> RATE{Rate Limiter}
-    RATE -->|Under limit| GROQ_CALL[Groq API Call]
-    RATE -->|Wait| RATE
+    GROQ_CLIENT --> RATE{"⏱️ Rate Limiter"}
+    RATE -->|"Under limit"| GROQ_CALL["📡 Groq API Call"]
+    RATE -->|"Wait"| RATE
 
-    GROQ_CALL -->|Success| RESULT[Transcription Result]
-    GROQ_CALL -->|429 Rate Limit| RETRY[Auto-retry with backoff]
+    GROQ_CALL -->|"✅ Success"| RESULT["📄 Transcription Result"]
+    GROQ_CALL -->|"⚠️ 429 Rate Limit"| RETRY["🔄 Auto-retry with backoff"]
     RETRY --> RATE
 
-    GEMINI_CLIENT --> GEMINI_CALL[Gemini API Call]
-    GEMINI_CALL -->|Success| RESULT
-    GEMINI_CALL -->|Error| STUB
+    GEMINI_CLIENT --> GEMINI_CALL["📡 Gemini API Call"]
+    GEMINI_CALL -->|"✅ Success"| RESULT
+    GEMINI_CALL -->|"❌ Error"| STUB
 
     STUB --> RESULT
 
-    style GROQ fill:#10b981,color:#fff
-    style GEMINI fill:#3b82f6,color:#fff
-    style STUB fill:#f59e0b,color:#fff
+    style START fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
+    style GROQ fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
+    style GEMINI fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
+    style STUB fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
+    style RATE fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
+    style RESULT fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
+    style RETRY fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
 ```
 
 | Priority | Provider | Model | Fallback Trigger |
@@ -599,21 +621,21 @@ flowchart TD
 
 **Rate Limiting:** Groq requests are rate-limited to 15 req/min with a 4-second minimum gap between requests to stay under the free tier limit (20 RPM).
 
-### Embedding Fallback
+### 🔢 Embedding Fallback
 
 | Priority | Method | Model | Fallback Trigger |
 |---|---|---|---|
-| 1 (Primary) | Sentence-transformers | all-MiniLM-L6-v2 | Library not installed |
-| 2 (Fallback) | TF-IDF | Hash-based 384-dim | Always available |
+| 🥇 1 (Primary) | Sentence-transformers | all-MiniLM-L6-v2 | Library not installed |
+| 🥈 2 (Fallback) | TF-IDF | Hash-based 384-dim | Always available |
 
-### Audio Analysis Fallback
+### 🔊 Audio Analysis Fallback
 
 | Priority | Method | Description | Fallback Trigger |
 |---|---|---|---|
-| 1 (Primary) | FFmpeg astats | Real RMS audio energy | FFmpeg unavailable |
-| 2 (Fallback) | Text length | Heuristic based on segment duration | Always available |
+| 🥇 1 (Primary) | FFmpeg astats | Real RMS audio energy | FFmpeg unavailable |
+| 🥈 2 (Fallback) | Text length | Heuristic based on segment duration | Always available |
 
-### Transcription Fallback Detail
+### 📝 Transcription Fallback Detail
 
 ```python
 # From transcription_service.py
@@ -643,119 +665,120 @@ class TranscriptionService:
 
 ---
 
-## Ranking Engine
+## 🏆 Ranking Engine
 
-The ranking engine uses 13 stages to score and select the best clips.
+<text style="color: #f59e0b;">The ranking engine uses **13 stages** to score and select the best clips.</text>
 
 ```mermaid
 flowchart LR
-    C[Candidates] --> HC[Hard Constraints]
-    HC --> NV[Narrative Validation]
-    NV --> CTX[Context Coherence]
-    CTX --> HQ[Hook Quality]
-    HQ --> ID[Information Density]
-    ID --> RP[Retention Prediction]
-    RP --> ND[Novelty/Dedup]
-    ND --> FINAL[Final Score]
-    FINAL --> MMR[MMR Optimization]
-    MMR --> RANKED[Ranked Clips]
+    C["🎯 Candidates"] --> HC["🚫 Hard Constraints"]
+    HC --> NV["📖 Narrative Validation"]
+    NV --> CTX["🔗 Context Coherence"]
+    CTX --> HQ["🎣 Hook Quality"]
+    HQ --> ID["📈 Information Density"]
+    ID --> RP["👁️ Retention Prediction"]
+    RP --> ND["🆕 Novelty/Dedup"]
+    ND --> FINAL["⭐ Final Score"]
+    FINAL --> MMR["⚡ MMR Optimization"]
+    MMR --> RANKED["🏆 Ranked Clips"]
 
-    style HC fill:#ef4444,color:#fff
-    style NV fill:#f59e0b,color:#fff
-    style CTX fill:#f59e0b,color:#fff
-    style HQ fill:#10b981,color:#fff
-    style ID fill:#10b981,color:#fff
-    style RP fill:#10b981,color:#fff
-    style ND fill:#3b82f6,color:#fff
-    style FINAL fill:#8b5cf6,color:#fff
-    style MMR fill:#8b5cf6,color:#fff
+    style HC fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
+    style NV fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
+    style CTX fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
+    style HQ fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
+    style ID fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
+    style RP fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
+    style ND fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
+    style FINAL fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
+    style MMR fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
+    style RANKED fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
 ```
 
-### Scoring Formula
+### 🧮 Scoring Formula
 
 ```
 total_score = hook_score * 0.35 + body_score * 0.25 + ending_score * 0.20 + flow_score * 0.20
 ```
 
-### Ranking Stages
+### 📊 Ranking Stages
 
 | Stage | Module | Purpose |
 |---|---|---|
-| 1 | `hard_constraints.py` | Filter: duration 15-90s, chronological order, max 30s gap |
-| 2 | `narrative.py` | Semantic coherence via embedding similarity |
-| 3 | `context.py` | Contextual coherence: pronoun consistency, shared nouns |
-| 4 | `hook_quality.py` | Hook effectiveness: duration, questions, curiosity words |
-| 5 | `density.py` | Information density: words/sec, specificity bonuses |
-| 6 | `retention.py` | Viewer retention prediction: CTA, flow, duration |
-| 7 | `novelty.py` | Semantic deduplication via cosine similarity (threshold 0.75) |
-| 8 | `tie_breaker.py` | Tie-breaking: confidence > hook > duration > position |
-| 9 | `confidence.py` | Confidence scoring: audio source, feature completeness |
-| 10 | `explanation.py` | Human-readable ranking explanations |
-| 11 | `optimizer.py` | MMR optimization: quality (0.7) + diversity (0.3) |
+| 1 | `hard_constraints.py` | 🚫 Filter: duration 15-90s, chronological order, max 30s gap |
+| 2 | `narrative.py` | 📖 Semantic coherence via embedding similarity |
+| 3 | `context.py` | 🔗 Contextual coherence: pronoun consistency, shared nouns |
+| 4 | `hook_quality.py` | 🎣 Hook effectiveness: duration, questions, curiosity words |
+| 5 | `density.py` | 📈 Information density: words/sec, specificity bonuses |
+| 6 | `retention.py` | 👁️ Viewer retention prediction: CTA, flow, duration |
+| 7 | `novelty.py` | 🆕 Semantic deduplication via cosine similarity (threshold 0.75) |
+| 8 | `tie_breaker.py` | ⚖️ Tie-breaking: confidence > hook > duration > position |
+| 9 | `confidence.py` | 🎯 Confidence scoring: audio source, feature completeness |
+| 10 | `explanation.py` | 📝 Human-readable ranking explanations |
+| 11 | `optimizer.py` | ⚡ MMR optimization: quality (0.7) + diversity (0.3) |
 
-### Segment Classification
+### 🏷️ Segment Classification
 
 Segments are classified into three types using regex patterns and positional heuristics:
 
 | Type | Detection Method | Example Patterns |
 |---|---|---|
-| **Hook** | First sentence + pattern match | "What if...", "Did you know...", "Imagine..." |
-| **Body** | Default for middle sentences | (any text) |
-| **Ending** | Last sentence + pattern match | "So that's why...", "Subscribe...", "Thanks for watching..." |
+| 🎣 **Hook** | First sentence + pattern match | "What if...", "Did you know...", "Imagine..." |
+| 📄 **Body** | Default for middle sentences | (any text) |
+| 🎬 **Ending** | Last sentence + pattern match | "So that's why...", "Subscribe...", "Thanks for watching..." |
 
 ---
 
-## Frontend
+## 🖥️ Frontend
 
-The frontend is a React SPA with 5 pages and a dark-themed UI.
+The frontend is a **React SPA** with 5 pages and a dark-themed UI.
 
 ```mermaid
 flowchart TB
-    subgraph Pages
-        UP[Upload Page]
-        SP[Status Page]
-        PP[Preview Page]
-        RP[Results Page]
-        SET[Settings Page]
+    subgraph Pages ["📄 Pages"]
+        UP["📤 Upload Page"]
+        SP["📊 Status Page"]
+        PP["👁️ Preview Page"]
+        RP["📋 Results Page"]
+        SET["⚙️ Settings Page"]
     end
 
-    subgraph State
-        JS[jobStore - Polling]
-        PS[previewStore - Selection]
-        UI[uiStore - Theme]
+    subgraph State ["💾 State"]
+        JS["🔄 jobStore - Polling"]
+        PS["✅ previewStore - Selection"]
+        UI["🎨 uiStore - Theme"]
     end
 
-    UP -->|Upload| JS
-    JS -->|Poll /api/status| SP
-    JS -->|Fetch /api/preview| PP
-    PP -->|Select clips| PS
-    PP -->|Download| RP
-    SET -->|Configure| UI
+    UP -->|"📤 Upload"| JS
+    JS -->|"🔄 Poll /api/status"| SP
+    JS -->|"📥 Fetch /api/preview"| PP
+    PP -->|"✅ Select clips"| PS
+    PP -->|"⬇️ Download"| RP
+    SET -->|"⚙️ Configure"| UI
 ```
 
-### Pages
+### 📄 Pages
 
 | Page | Route | Purpose |
 |---|---|---|
-| Upload | `/upload` | File picker, drag-and-drop upload |
-| Status | `/status` | Progress timeline, job summary, retry/cancel |
-| Preview | `/preview` | Clip grid with scores, export button |
-| Results | `/results` | Final output, clip list, download |
-| Settings | `/settings` | API base URL configuration |
+| 📤 Upload | `/upload` | File picker, drag-and-drop upload |
+| 📊 Status | `/status` | Progress timeline, job summary, retry/cancel |
+| 👁️ Preview | `/preview` | Clip grid with scores, export button |
+| 📋 Results | `/results` | Final output, clip list, download |
+| ⚙️ Settings | `/settings` | API base URL configuration |
 
-### State Management
+### 💾 State Management
 
 | Store | Hook | Purpose |
 |---|---|---|
-| `jobStore` | `useJobState()` | Job ID, status, preview, polling (2.5s interval) |
-| `previewStore` | `usePreviewSelection()` | Clip selection toggle |
-| `uiStore` | `useUiState()` | Theme, API base URL |
+| `jobStore` | `useJobState()` | 🔄 Job ID, status, preview, polling (2.5s interval) |
+| `previewStore` | `usePreviewSelection()` | ✅ Clip selection toggle |
+| `uiStore` | `useUiState()` | 🎨 Theme, API base URL |
 
 ---
 
-## Configuration
+## ⚙️ Configuration
 
-### Environment Variables
+### 🔑 Environment Variables
 
 ```bash
 # Storage
@@ -787,7 +810,7 @@ GROQ_API_KEY=
 GEMINI_API_KEY=
 ```
 
-### Runtime Configuration
+### 🔄 Runtime Configuration
 
 Settings are loaded in order: defaults -> `runtime.yaml` -> environment variables.
 
@@ -816,68 +839,68 @@ thresholds:
   preview_top_k: 20
 ```
 
-### Adaptive Chunking
+### 📊 Adaptive Chunking
 
 Chunk sizes adapt to video duration:
 
 | Video Length | Chunk Size | Workers | Overlap |
 |---|---|---|---|
-| < 10 minutes | 30s | 3 | 2s |
-| 10 min - 1 hour | 45s | 5 | 2s |
-| > 1 hour | 90s | 5 | 2s |
+| 🎬 < 10 minutes | 30s | 3 | 2s |
+| 🎬 10 min - 1 hour | 45s | 5 | 2s |
+| 🎬 > 1 hour | 90s | 5 | 2s |
 
 ---
 
-## Setup
+## 🚀 Setup
 
-### Prerequisites
+### 📋 Prerequisites
 
 - Python 3.10+
 - Node.js 18+
 - FFmpeg (in PATH)
 - At least one transcription API key (Groq or Gemini)
 
-### Quick Start (Windows)
+### ⚡ Quick Start (Windows)
 
 ```bash
-# Clone the repository
+# 📥 Clone the repository
 git clone https://github.com/yourusername/trimora.git
 cd trimora
 
-# Copy and configure environment
+# 📝 Copy and configure environment
 copy .env.example .env
 # Edit .env with your API keys
 
-# Run the launcher
+# 🚀 Run the launcher
 start.bat
 ```
 
-### Manual Setup
+### 🔧 Manual Setup
 
 ```bash
-# Backend
+# 🐍 Backend
 cd backend
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
 
-# Frontend
+# 📦 Frontend
 cd frontend
 npm install
 
-# Start backend (port 8000)
+# 🚀 Start backend (port 8000)
 cd ../backend
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
-# Start frontend (port 5173)
+# 🚀 Start frontend (port 5173)
 cd ../frontend
 npm run dev
 ```
 
-### API Key Setup
+### 🔑 API Key Setup
 
-1. **Groq** (recommended): Get a free API key at [console.groq.com](https://console.groq.com)
-2. **Gemini** (fallback): Get a free API key at [aistudio.google.com](https://aistudio.google.com)
+1. 🥇 **Groq** (recommended): Get a free API key at [console.groq.com](https://console.groq.com)
+2. 🥈 **Gemini** (fallback): Get a free API key at [aistudio.google.com](https://aistudio.google.com)
 
 Set at least one in your `.env` file:
 
@@ -888,9 +911,9 @@ GEMINI_API_KEY=AIza...
 
 ---
 
-## Docker
+## 🐳 Docker
 
-### Docker Compose
+### 🐳 Docker Compose
 
 ```bash
 docker-compose up --build
@@ -899,91 +922,75 @@ docker-compose up --build
 - Backend: `http://localhost:8000`
 - Frontend: `http://localhost:3000`
 
-### Services
+### 📊 Services
 
 | Service | Port | Description |
 |---|---|---|
-| backend | 8000 | FastAPI + FFmpeg |
-| frontend | 3000 | Nginx + React build |
+| ⚙️ backend | 8000 | FastAPI + FFmpeg |
+| 🖥️ frontend | 3000 | Nginx + React build |
 
-### Dockerfiles
+### 📦 Dockerfiles
 
-- `docker/Dockerfile.backend` - Python 3.11-slim + FFmpeg
-- `docker/Dockerfile.frontend` - Multi-stage: Node 20 build + Nginx serve
+- `docker/Dockerfile.backend` - 🐍 Python 3.11-slim + FFmpeg
+- `docker/Dockerfile.frontend` - 📦 Multi-stage: Node 20 build + Nginx serve
 
 ---
 
-## Storage
+## 💾 Storage
 
 Each job is self-contained in `storage/jobs/{job_id}/`:
 
 ```text
 storage/jobs/{job_id}/
-├── input/              # Uploaded video file
-├── audio/
+├── 📥 input/              # Uploaded video file
+├── 🎵 audio/
 │   ├── audio.opus      # Extracted audio
 │   └── chunks/         # Split audio chunks
-├── transcript/
+├── 📝 transcript/
 │   ├── transcript.json # Merged transcript
 │   └── words.json      # Per-chunk transcripts
-├── segments/
+├── ✂️ segments/
 │   └── atomic_segments.json
-├── features/
+├── 🔍 features/
 │   └── feature_vectors.json
-├── graph/
+├── 🕸️ graph/
 │   └── local_graph.json
-├── clips/
+├── 🎬 clips/
 │   ├── candidates.json
 │   ├── ranked_clips.json
 │   └── preview_manifest.json
-├── learning/
+├── 📈 learning/
 │   ├── labels.json
 │   ├── decision_log.json
 │   ├── patterns.json
 │   └── failures.json
-├── analytics/
+├── 📊 analytics/
 │   └── statistics.json
-├── exports/
+├── 🎞️ exports/
 │   └── reel_001.mp4
-├── state.json          # Job state
-└── metadata.json       # Job metadata
+├── state.json          # 📋 Job state
+└── metadata.json       # 📋 Job metadata
 ```
 
-### Data Models
+### 📊 Data Models
 
 | Model | File | Fields |
 |---|---|---|
-| JobRecord | `state.json` | job_id, status, progress, created_at, error, stats |
-| TranscriptChunk | `words.json` | chunk_id, start, end, text, confidence |
-| AtomicSegment | `atomic_segments.json` | id, start, end, text, kind, order |
-| SegmentFeatures | `feature_vectors.json` | segment_id, audio_intensity, text_density, structure_score |
-| ClipCandidate | `candidates.json` | id, hook/body/ending timestamps, scores |
-| PreviewManifest | `preview_manifest.json` | job_id, clips[] |
-| KnowledgeGraph | `local_graph.json` | nodes[], edges[] |
-| AnalyticsSummary | `statistics.json` | processing_time, chunk_count, worker_utilization |
+| 📋 JobRecord | `state.json` | job_id, status, progress, created_at, error, stats |
+| 📝 TranscriptChunk | `words.json` | chunk_id, start, end, text, confidence |
+| ✂️ AtomicSegment | `atomic_segments.json` | id, start, end, text, kind, order |
+| 🔍 SegmentFeatures | `feature_vectors.json` | segment_id, audio_intensity, text_density, structure_score |
+| 🎬 ClipCandidate | `candidates.json` | id, hook/body/ending timestamps, scores |
+| 👁️ PreviewManifest | `preview_manifest.json` | job_id, clips[] |
+| 🕸️ KnowledgeGraph | `local_graph.json` | nodes[], edges[] |
+| 📊 AnalyticsSummary | `statistics.json` | processing_time, chunk_count, worker_utilization |
 
 ---
 
-## License
+## 📜 License
 
-MIT License
+This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
 
-Copyright (c) 2026 Trimora
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+```
+MIT License - Copyright (c) 2026 Trimora
+```
