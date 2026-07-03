@@ -24,6 +24,9 @@ node_modules/
 *.swp
 *.swo
 
+# Local job data
+storage/
+
 # OS
 .DS_Store
 Thumbs.db
