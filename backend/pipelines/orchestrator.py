@@ -15,7 +15,7 @@ class Orchestrator:
         self.pipeline = ProductionPipeline(job_store)
         self._tasks: Dict[str, asyncio.Task] = {}
 
-    def start_job(self, job_id: str) -> None:
+    async def start_job(self, job_id: str) -> None:
         if job_id in self._tasks and not self._tasks[job_id].done():
             return
         self.job_store.set_status(job_id, JobStatus.queued, 0.01)
@@ -39,4 +39,4 @@ class Orchestrator:
     async def retry_job(self, job_id: str) -> None:
         job = self.job_store.load_job(job_id)
         self.job_store.update_job(job_id, retries=job.retries + 1, cancelled=False, error=None)
-        self.start_job(job_id)
+        await self.start_job(job_id)
