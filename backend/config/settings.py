@@ -18,12 +18,14 @@ class Settings:
     root_dir: Path = field(default_factory=lambda: Path(__file__).resolve().parents[2])
     storage_root: Path = field(default_factory=lambda: Path("./storage"))
     jobs_root: Path = field(default_factory=lambda: Path("./storage/jobs"))
-    max_transcription_workers: int = 15
+    max_transcription_workers: int = 5
     max_feature_workers: int = 15
     max_clip_workers: int = 8
     min_chunk_seconds: int = 30
     max_chunk_seconds: int = 120
     overlap_seconds: int = 2
+    chunk_bitrate: str = "64k"
+    keep_chunks: bool = True
     retry_count: int = 3
     transcription_provider: str = "stub"
     groq_api_key: str = ""
@@ -57,6 +59,8 @@ class Settings:
         base.min_chunk_seconds = int(chunking.get("min_seconds", base.min_chunk_seconds))
         base.max_chunk_seconds = int(chunking.get("max_seconds", base.max_chunk_seconds))
         base.overlap_seconds = int(chunking.get("overlap_seconds", base.overlap_seconds))
+        base.chunk_bitrate = str(chunking.get("bitrate", base.chunk_bitrate))
+        base.keep_chunks = bool(chunking.get("keep_chunks", base.keep_chunks))
         base.retry_count = int(job.get("retry_count", base.retry_count))
         base.transcription_provider = str(job.get("transcription_provider", base.transcription_provider))
         base.transcription_timeout_seconds = int(job.get("transcription_timeout_seconds", base.transcription_timeout_seconds))
