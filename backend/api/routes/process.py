@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 
 from backend.models.job import JobRecord
 from backend.utils.validation import is_allowed_video
@@ -11,7 +11,7 @@ router = APIRouter(prefix="/api", tags=["process"])
 
 
 @router.post("/process")
-async def process_video(request: Request, background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+async def process_video(request: Request, file: UploadFile = File(...)):
     job_store = request.app.state.job_store
     orchestrator = request.app.state.orchestrator
 
@@ -38,5 +38,5 @@ async def process_video(request: Request, background_tasks: BackgroundTasks, fil
     input_path.write_bytes(content)
     job_store.update_job(record.job_id, source_path=str(input_path), status=record.status)
 
-    background_tasks.add_task(orchestrator.start_job, record.job_id)
+    await orchestrator.start_job(record.job_id)
     return {"job_id": record.job_id, "status": record.status.value, "progress": record.progress}
