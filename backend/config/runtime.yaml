@@ -24,3 +24,8 @@ thresholds:
   min_segment_seconds: 1.2
   min_candidate_score: 0.35
   preview_top_k: 20
+
+semantic:
+  batch_size: 10
+  context_overlap: 2
+  batch_delay_seconds: 0.0
