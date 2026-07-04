@@ -108,6 +108,10 @@ class LLMProvider(ABC):
     def complete(self, prompt: str, response_format: str = "json") -> dict:
         pass
 
+    def estimate_tokens(self, text: str) -> int:
+        """Rough token estimate: ~4 chars per token."""
+        return max(1, len(text) // 4)
+
 
 class GroqProvider(LLMProvider):
     def __init__(self, api_key: str, model: str = "llama-3.1-8b-instant"):
