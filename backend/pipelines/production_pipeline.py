@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
 from pathlib import Path
 from time import perf_counter
+
+logger = logging.getLogger(__name__)
 
 from backend.config.settings import settings
 from backend.models.clip import ClipCandidate
@@ -23,6 +26,18 @@ from backend.services.rendering_service import RenderingService
 from backend.services.scoring_service import ScoringService
 from backend.services.segmentation_service import SegmentationService
 from backend.services.transcription_service import TranscriptionService
+from backend.services.llm_provider import create_provider
+from backend.services.semantic_service import SemanticService, SemanticEnrichmentError
+from backend.services.story_reasoner import StoryReasoner, Pass2Error
+from backend.services.story_detector import StoryDetector
+from backend.services.story_validator import StoryValidator
+from backend.services.coverage_analyzer import CoverageAnalyzer
+from backend.services.blueprint_generator import BlueprintGenerator
+from backend.services.embedding_clusterer import EmbeddingClusterer
+from backend.services.block_synopsis_generator import BlockSynopsisGenerator
+from backend.services.priority_ranker import PriorityRanker
+from backend.services.transcript_summarizer import TranscriptSummarizer
+from backend.models.generation_state import BlueprintGenerationState, PipelineTiming, RepairStats
 from backend.storage.file_store import FileStore
 from backend.storage.job_store import JobStore
 from backend.utils.text_utils import split_sentences
@@ -46,6 +61,19 @@ class ProductionPipeline:
         self.embedding_service = EmbeddingService()
         self.ranker = RankingEngine(embedder=self.embedding_service)
         self.scheduler = Scheduler(settings.max_transcription_workers)
+        # Semantic enrichment services
+        self.llm_provider = create_provider(settings.semantic_provider)
+        self.semantic_service = SemanticService(self.llm_provider)
+        self.story_reasoner = StoryReasoner(self.llm_provider)
+        self.story_detector = StoryDetector()
+        self.story_validator = StoryValidator()
+        self.coverage_analyzer = CoverageAnalyzer()
+        self.blueprint_generator = BlueprintGenerator(self.embedding_service)
+        # New embedding-first pipeline services
+        self.embedding_clusterer = EmbeddingClusterer(self.embedding_service)
+        self.block_synopsis_generator = BlockSynopsisGenerator(self.embedding_service)
+        self.priority_ranker = PriorityRanker()
+        self.transcript_summarizer = TranscriptSummarizer(self.llm_provider)
 
     async def _publish_event(self, job_id: str, name: str, payload: dict) -> None:
         await self.event_bus.publish(PipelineEvent(job_id=job_id, name=name, payload=payload))
@@ -164,6 +192,201 @@ class ProductionPipeline:
             cancelled = self._check_cancelled(job_id)
             if cancelled:
                 return cancelled
+
+            # --- Semantic Enrichment Layer (Embedding-First Pipeline) ---
+            semantic_dir = workdir / "semantic"
+            stories_dir = workdir / "stories"
+            semantic_dir.mkdir(exist_ok=True)
+            stories_dir.mkdir(exist_ok=True)
+            timing = PipelineTiming()
+            semantic_start = perf_counter()
+
+            # Step 1: Embedding-First Topic Block Clustering
+            self.job_store.set_status(job_id, JobStatus.analyzing, 0.70)
+            t0 = perf_counter()
+            blocks = self.embedding_clusterer.cluster_segments(segments)
+            timing.semantic_annotation_ms = (perf_counter() - t0) * 1000
+            self.job_store.file_store.write_json(
+                semantic_dir / "topic_blocks.json",
+                {"blocks": [b.model_dump(mode="json") for b in blocks]},
+            )
+
+            # Step 2: Block Synopsis Generation (Deterministic)
+            t0 = perf_counter()
+            self.block_synopsis_generator.generate_synopses(blocks, segments)
+            self.block_synopsis_generator.persist_synopses(blocks, semantic_dir)
+            timing.story_reasoning_ms = (perf_counter() - t0) * 1000
+
+            # Step 3: Priority Queue (Scheduling Only — never mutates timeline order)
+            priority_queue = self.priority_ranker.rank_blocks(blocks)
+            self.job_store.file_store.write_json(
+                semantic_dir / "priority_queue.json",
+                priority_queue.model_dump(mode="json"),
+            )
+
+            # Step 4: Structured Summary (Root Semantic Artifact — 1 LLM call)
+            self.job_store.set_status(job_id, JobStatus.analyzing, 0.72)
+            t0 = perf_counter()
+            summary_data = self.transcript_summarizer.summarize(
+                segments=segments,
+                blocks=blocks,
+                transcript_text=merged_text,
+            )
+            self.job_store.file_store.write_json(
+                semantic_dir / "summary.json",
+                summary_data,
+            )
+            summary_text = summary_data.get("main_topic", "")
+            timing.story_verification_ms = (perf_counter() - t0) * 1000
+
+            # Step 5: Pass 1 — Semantic Annotation (with block boundaries, summary context)
+            checkpoint_path = semantic_dir / "pass1_checkpoint.jsonl"
+            max_retries = 3
+            annotations = None
+            pass1_raw = None
+
+            def semantic_progress_callback(batch_idx: int, total_batches: int) -> None:
+                progress = 0.72 + (batch_idx / max(total_batches, 1)) * 0.02
+                self.job_store.set_status(job_id, JobStatus.analyzing, min(progress, 0.74))
+
+            for attempt in range(max_retries):
+                try:
+                    self.job_store.set_status(job_id, JobStatus.analyzing, 0.72)
+                    t0 = perf_counter()
+                    annotations, pass1_raw = self.semantic_service.annotate_segments(
+                        segments, blocks, merged_text, job_id,
+                        summary=summary_text,
+                        checkpoint_path=checkpoint_path,
+                        progress_callback=semantic_progress_callback,
+                    )
+                    timing.semantic_annotation_ms = (perf_counter() - t0) * 1000
+                    break
+                except SemanticEnrichmentError as e:
+                    logger.warning("Semantic enrichment attempt %d failed: %s", attempt + 1, e)
+                    if attempt == max_retries - 1:
+                        logger.error("All %d attempts failed. Using partial results.", max_retries)
+                        from backend.models.semantic import SegmentAnnotations
+                        annotations = SegmentAnnotations(
+                            job_id=job_id,
+                            annotations=e.partial_annotations,
+                            relationships=e.partial_relationships,
+                        )
+                        pass1_raw = {"pass1_raw": e.raw_outputs}
+                        timing.semantic_annotation_ms = (perf_counter() - t0) * 1000
+                    else:
+                        import time
+                        wait = 2 ** attempt
+                        logger.info("Retrying from checkpoint in %ds...", wait)
+                        time.sleep(wait)
+
+            self.job_store.file_store.write_json(semantic_dir / "segment_annotations.json", annotations.model_dump(mode="json"))
+            self.job_store.file_store.write_json(semantic_dir / "pass1_raw.json", pass1_raw)
+
+            # Step 6: Pass 2 — Story Reasoning (block-based prompts, summary context)
+            pass2_checkpoint_path = semantic_dir / "pass2_checkpoint.jsonl"
+            pass2_max_retries = 3
+            boundaries = None
+            pass2_raw = None
+
+            def pass2_progress_callback(batch_idx: int, total_batches: int) -> None:
+                progress = 0.74 + (batch_idx / max(total_batches, 1)) * 0.01
+                self.job_store.set_status(job_id, JobStatus.analyzing, min(progress, 0.75))
+
+            for attempt in range(pass2_max_retries):
+                try:
+                    self.job_store.set_status(job_id, JobStatus.analyzing, 0.74)
+                    t0 = perf_counter()
+                    boundaries, pass2_raw = self.story_reasoner.detect_story_boundaries(
+                        segments, annotations,
+                        blocks=blocks,
+                        summary=summary_text,
+                        checkpoint_path=pass2_checkpoint_path,
+                        progress_callback=pass2_progress_callback,
+                    )
+                    timing.story_reasoning_ms = (perf_counter() - t0) * 1000
+                    break
+                except Pass2Error as e:
+                    logger.warning("Pass 2 attempt %d failed: %s", attempt + 1, e)
+                    if attempt == pass2_max_retries - 1:
+                        logger.error("All %d Pass 2 attempts failed. Using partial results.", pass2_max_retries)
+                        boundaries = e.partial_boundaries
+                        pass2_raw = {"pass2_raw": e.raw_outputs}
+                        timing.story_reasoning_ms = (perf_counter() - t0) * 1000
+                    else:
+                        import time as _time
+                        wait = 2 ** attempt
+                        logger.info("Retrying Pass 2 from checkpoint in %ds...", wait)
+                        _time.sleep(wait)
+
+            annotations.llm_story_boundaries = boundaries
+            self.job_store.file_store.write_json(semantic_dir / "segment_annotations.json", annotations.model_dump(mode="json"))
+            self.job_store.file_store.write_json(semantic_dir / "pass2_raw.json", pass2_raw)
+
+            # Story Candidate Formation
+            self.job_store.set_status(job_id, JobStatus.analyzing, 0.75)
+            candidates_stories = self.story_detector.form_candidates(segments, annotations)
+
+            # Story Verification
+            self.job_store.set_status(job_id, JobStatus.analyzing, 0.76)
+            t0 = perf_counter()
+            candidates_stories = self.story_detector.verify_candidates(candidates_stories, segments, annotations)
+            timing.story_verification_ms = (perf_counter() - t0) * 1000
+            self.job_store.file_store.write_json(stories_dir / "story_candidates.json", {"candidates": [c.model_dump(mode="json") for c in candidates_stories]})
+
+            # Story Repair
+            self.job_store.set_status(job_id, JobStatus.analyzing, 0.77)
+            t0 = perf_counter()
+            repaired_stories, rejected_stories, repair_records = self.story_detector.repair_candidates(candidates_stories, segments, annotations)
+            timing.story_repair_ms = (perf_counter() - t0) * 1000
+
+            # Story Validation
+            self.job_store.set_status(job_id, JobStatus.analyzing, 0.78)
+            t0 = perf_counter()
+            validated_stories, all_rejected = self.story_validator.validate_stories(repaired_stories, rejected_stories, segments, annotations)
+            timing.story_validation_ms = (perf_counter() - t0) * 1000
+            self.job_store.file_store.write_json(stories_dir / "validated_stories.json", {
+                "stories": [s.model_dump(mode="json") for s in validated_stories],
+                "rejected_stories": [s.model_dump(mode="json") for s in all_rejected],
+            })
+
+            # Coverage Analysis
+            t0 = perf_counter()
+            coverage = self.coverage_analyzer.compute_coverage(validated_stories, all_rejected, segments)
+            timing.coverage_analysis_ms = (perf_counter() - t0) * 1000
+            await self._publish_event(job_id, "coverage_analyzed", {
+                "coverage_score": coverage.coverage_score,
+                "fully_covered": coverage.fully_covered,
+                "partially_covered": coverage.partially_covered,
+                "unused": coverage.unused,
+                "potential_shorts": coverage.potential_additional_shorts,
+            })
+
+            # Blueprint Generation
+            self.job_store.set_status(job_id, JobStatus.analyzing, 0.80)
+            t0 = perf_counter()
+            blueprints, gen_state = self.blueprint_generator.generate_blueprints(validated_stories, all_rejected, segments, annotations)
+            timing.blueprint_generation_ms = (perf_counter() - t0) * 1000
+            timing.total_semantic_ms = (perf_counter() - semantic_start) * 1000
+
+            # Populate generation state
+            gen_state.repair_records = repair_records
+            gen_state.repair_stats = RepairStats(
+                total_candidates=len(candidates_stories),
+                candidates_repaired=len(repaired_stories),
+                candidates_rejected=len(rejected_stories),
+                repair_success_rate=round(len(repaired_stories) / max(len(candidates_stories), 1), 4),
+            )
+            gen_state.pipeline_timing = timing
+
+            self.job_store.file_store.write_json(workdir / "clips" / "story_blueprints.json", {"blueprints": [b.model_dump(mode="json") for b in blueprints]})
+            self.job_store.file_store.write_json(workdir / "clips" / "generation_state.json", gen_state.model_dump(mode="json"))
+            await self._publish_event(job_id, "blueprints_generated", {"blueprint_count": len(blueprints)})
+
+            cancelled = self._check_cancelled(job_id)
+            if cancelled:
+                return cancelled
+
+            # --- End Semantic Enrichment ---
 
             self.job_store.set_status(job_id, JobStatus.scoring, 0.8)
             candidates = self.scoring_service.generate_candidates(
