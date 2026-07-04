@@ -9,6 +9,10 @@ from time import perf_counter
 logger = logging.getLogger(__name__)
 
 from backend.config.settings import settings
+from backend.execution.engine import ExecutionEngine, PipelineExecutor
+from backend.execution.models import STAGE_SUMMARY, STAGE_PASS1, STAGE_PASS2, STAGE_BLUEPRINT
+from backend.execution.provider_session import ProviderSession
+from backend.execution.repository import SegmentRepository
 from backend.models.clip import ClipCandidate
 from backend.models.job import JobRecord, JobStatus
 from backend.models.segment import AtomicSegment
@@ -45,8 +49,10 @@ from backend.workers.scheduler import Scheduler
 
 
 class ProductionPipeline:
-    def __init__(self, job_store: JobStore):
+    def __init__(self, job_store: JobStore, engine: ExecutionEngine | None = None):
         self.job_store = job_store
+        self.engine = engine
+        self._executor: PipelineExecutor | None = None
         self.audio_service = AudioService()
         self.transcription_service = TranscriptionService()
         self.segmentation_service = SegmentationService()
@@ -204,7 +210,7 @@ class ProductionPipeline:
             # Step 1: Embedding-First Topic Block Clustering
             self.job_store.set_status(job_id, JobStatus.analyzing, 0.70)
             t0 = perf_counter()
-            blocks = self.embedding_clusterer.cluster_segments(segments)
+            blocks, _embeddings_data = self.embedding_clusterer.cluster(segments)
             timing.semantic_annotation_ms = (perf_counter() - t0) * 1000
             self.job_store.file_store.write_json(
                 semantic_dir / "topic_blocks.json",
@@ -213,8 +219,10 @@ class ProductionPipeline:
 
             # Step 2: Block Synopsis Generation (Deterministic)
             t0 = perf_counter()
-            self.block_synopsis_generator.generate_synopses(blocks, segments)
-            self.block_synopsis_generator.persist_synopses(blocks, semantic_dir)
+            for block in blocks:
+                block.synopsis = self.block_synopsis_generator.generate_synopsis(block)
+                block.representative_excerpt = self.block_synopsis_generator.find_representative_excerpt(block)
+            BlockSynopsisGenerator.save_synopses(blocks, semantic_dir / "block_synopses.json")
             timing.story_reasoning_ms = (perf_counter() - t0) * 1000
 
             # Step 3: Priority Queue (Scheduling Only — never mutates timeline order)
@@ -227,11 +235,42 @@ class ProductionPipeline:
             # Step 4: Structured Summary (Root Semantic Artifact — 1 LLM call)
             self.job_store.set_status(job_id, JobStatus.analyzing, 0.72)
             t0 = perf_counter()
-            summary_data = self.transcript_summarizer.summarize(
-                segments=segments,
-                blocks=blocks,
-                transcript_text=merged_text,
+
+            # Build synopses list for execution layer
+            synopses_for_summary = [
+                {
+                    "synopsis": block.synopsis,
+                    "representative_excerpt": block.representative_excerpt,
+                }
+                for block in blocks
+            ]
+
+            # Create repository (read-only, per job)
+            repo = SegmentRepository(segments, blocks)
+
+            # Initialize executor if not yet done
+            if self._executor is None:
+                if self.engine is None:
+                    from backend.services.llm_provider import create_provider
+                    provider = create_provider(settings.semantic_provider)
+                    session = ProviderSession(provider, capacity=5500)
+                    self.engine = ExecutionEngine(session, max_concurrent=3)
+                    await self.engine.start(num_workers=3)
+                self._executor = PipelineExecutor(self.engine)
+                self._executor.register_stage(STAGE_SUMMARY)
+                self._executor.register_stage(STAGE_PASS1)
+                self._executor.register_stage(STAGE_PASS2)
+                self._executor.register_stage(STAGE_BLUEPRINT)
+
+            # Submit summary request
+            summary_request = self.transcript_summarizer.create_request(
+                blocks, synopses_for_summary, job_id,
             )
+            self._executor.submit_stage(STAGE_SUMMARY, [summary_request], repo)
+            summary_handles = await self._executor.wait_for_stage(STAGE_SUMMARY)
+            summary_result = await summary_handles[0].result()
+            summary_data = self.transcript_summarizer.parse_result(summary_result)
+
             self.job_store.file_store.write_json(
                 semantic_dir / "summary.json",
                 summary_data,
@@ -240,83 +279,65 @@ class ProductionPipeline:
             timing.story_verification_ms = (perf_counter() - t0) * 1000
 
             # Step 5: Pass 1 — Semantic Annotation (with block boundaries, summary context)
-            checkpoint_path = semantic_dir / "pass1_checkpoint.jsonl"
-            max_retries = 3
-            annotations = None
-            pass1_raw = None
+            t0 = perf_counter()
+            self.job_store.set_status(job_id, JobStatus.analyzing, 0.72)
 
-            def semantic_progress_callback(batch_idx: int, total_batches: int) -> None:
-                progress = 0.72 + (batch_idx / max(total_batches, 1)) * 0.02
-                self.job_store.set_status(job_id, JobStatus.analyzing, min(progress, 0.74))
+            pass1_requests = self.semantic_service.create_requests(
+                blocks, segments, summary=summary_text, job_id=job_id,
+            )
+            self._executor.submit_stage(STAGE_PASS1, pass1_requests, repo)
+            pass1_handles = await self._executor.wait_for_stage(STAGE_PASS1)
 
-            for attempt in range(max_retries):
+            all_annotations = []
+            all_pass1_raw = []
+            for handle in pass1_handles:
                 try:
-                    self.job_store.set_status(job_id, JobStatus.analyzing, 0.72)
-                    t0 = perf_counter()
-                    annotations, pass1_raw = self.semantic_service.annotate_segments(
-                        segments, blocks, merged_text, job_id,
-                        summary=summary_text,
-                        checkpoint_path=checkpoint_path,
-                        progress_callback=semantic_progress_callback,
-                    )
-                    timing.semantic_annotation_ms = (perf_counter() - t0) * 1000
-                    break
-                except SemanticEnrichmentError as e:
-                    logger.warning("Semantic enrichment attempt %d failed: %s", attempt + 1, e)
-                    if attempt == max_retries - 1:
-                        logger.error("All %d attempts failed. Using partial results.", max_retries)
-                        from backend.models.semantic import SegmentAnnotations
-                        annotations = SegmentAnnotations(
-                            job_id=job_id,
-                            annotations=e.partial_annotations,
-                            relationships=e.partial_relationships,
-                        )
-                        pass1_raw = {"pass1_raw": e.raw_outputs}
-                        timing.semantic_annotation_ms = (perf_counter() - t0) * 1000
-                    else:
-                        import time
-                        wait = 2 ** attempt
-                        logger.info("Retrying from checkpoint in %ds...", wait)
-                        time.sleep(wait)
+                    result = await handle.result()
+                    annotations_batch, _ = self.semantic_service.parse_result(result)
+                    all_annotations.extend(annotations_batch)
+                    all_pass1_raw.append(result.raw_response)
+                except Exception as e:
+                    logger.warning("Pass 1 handle failed: %s", e)
+
+            from backend.models.semantic import SegmentAnnotations
+            annotations = SegmentAnnotations(
+                job_id=job_id,
+                annotations=all_annotations,
+                relationships=[],
+            )
+            pass1_raw = {"pass1_raw": all_pass1_raw}
+            timing.semantic_annotation_ms = (perf_counter() - t0) * 1000
 
             self.job_store.file_store.write_json(semantic_dir / "segment_annotations.json", annotations.model_dump(mode="json"))
             self.job_store.file_store.write_json(semantic_dir / "pass1_raw.json", pass1_raw)
 
+            # Update repo with annotations for Pass 2
+            repo = SegmentRepository(segments, blocks, annotations=annotations)
+
             # Step 6: Pass 2 — Story Reasoning (block-based prompts, summary context)
-            pass2_checkpoint_path = semantic_dir / "pass2_checkpoint.jsonl"
-            pass2_max_retries = 3
-            boundaries = None
-            pass2_raw = None
+            t0 = perf_counter()
+            self.job_store.set_status(job_id, JobStatus.analyzing, 0.74)
 
-            def pass2_progress_callback(batch_idx: int, total_batches: int) -> None:
-                progress = 0.74 + (batch_idx / max(total_batches, 1)) * 0.01
-                self.job_store.set_status(job_id, JobStatus.analyzing, min(progress, 0.75))
+            pass2_requests = self.story_reasoner.create_requests(
+                blocks, segments, annotations, summary_text, job_id,
+            )
+            self._executor.submit_stage(STAGE_PASS2, pass2_requests, repo)
+            pass2_handles = await self._executor.wait_for_stage(STAGE_PASS2)
 
-            for attempt in range(pass2_max_retries):
+            all_boundaries = []
+            all_pass2_raw = []
+            for handle in pass2_handles:
                 try:
-                    self.job_store.set_status(job_id, JobStatus.analyzing, 0.74)
-                    t0 = perf_counter()
-                    boundaries, pass2_raw = self.story_reasoner.detect_story_boundaries(
-                        segments, annotations,
-                        blocks=blocks,
-                        summary=summary_text,
-                        checkpoint_path=pass2_checkpoint_path,
-                        progress_callback=pass2_progress_callback,
-                    )
-                    timing.story_reasoning_ms = (perf_counter() - t0) * 1000
-                    break
-                except Pass2Error as e:
-                    logger.warning("Pass 2 attempt %d failed: %s", attempt + 1, e)
-                    if attempt == pass2_max_retries - 1:
-                        logger.error("All %d Pass 2 attempts failed. Using partial results.", pass2_max_retries)
-                        boundaries = e.partial_boundaries
-                        pass2_raw = {"pass2_raw": e.raw_outputs}
-                        timing.story_reasoning_ms = (perf_counter() - t0) * 1000
-                    else:
-                        import time as _time
-                        wait = 2 ** attempt
-                        logger.info("Retrying Pass 2 from checkpoint in %ds...", wait)
-                        _time.sleep(wait)
+                    result = await handle.result()
+                    boundaries_batch = self.story_reasoner.parse_result(result)
+                    all_boundaries.extend(boundaries_batch)
+                    all_pass2_raw.append(result.raw_response)
+                except Exception as e:
+                    logger.warning("Pass 2 handle failed: %s", e)
+
+            boundaries = all_boundaries
+            pass2_raw = {"pass2_raw": all_pass2_raw}
+            timing.story_reasoning_ms = (perf_counter() - t0) * 1000
 
             annotations.llm_story_boundaries = boundaries
             self.job_store.file_store.write_json(semantic_dir / "segment_annotations.json", annotations.model_dump(mode="json"))
