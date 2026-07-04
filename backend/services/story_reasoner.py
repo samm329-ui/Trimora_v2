@@ -6,6 +6,11 @@ import time
 from pathlib import Path
 
 from backend.config.settings import settings
+from backend.execution.models import (
+    ExecutionRequest, ExecutionResult, PromptBuilder, PromptContext,
+    RequestPriority, STAGE_PASS2,
+)
+from backend.execution.repository import SegmentRepository
 from backend.models.semantic import LLMStoryBoundary
 from backend.models.topic_block import TopicBlock
 from backend.services.llm_provider import LLMProvider
@@ -24,9 +29,121 @@ class Pass2Error(Exception):
         self.last_block_index = last_block_index
 
 
+class StoryPromptBuilder(PromptBuilder):
+    """Builds Pass 2 prompts from PromptContext + SegmentRepository."""
+
+    def build(self, ctx: PromptContext, repo: SegmentRepository) -> str:
+        segments = repo.get_segments(ctx.segment_ids)
+        block = repo.get_block(ctx.block_index)
+        block_annotations = repo.get_annotations(ctx.segment_ids)
+
+        ann_text = "\n".join(
+            f"[{a.segment_id}] role={a.story_role}, topic={a.topic}, "
+            f"emotion={a.emotion}({a.emotion_intensity:.1f}), "
+            f"importance={a.importance_score:.2f}, hook={a.hook_strength:.2f}, "
+            f"ending={a.ending_strength:.2f}, curiosity={a.curiosity_score:.2f}"
+            for a in block_annotations
+        )
+        seg_text = "\n".join(f"[{s.id} | {s.start:.1f}-{s.end:.1f}] {s.text[:80]}" for s in segments)
+
+        prompt = "You are a story editor. Identify distinct stories in the following topic block.\n\n"
+        if ctx.summary:
+            prompt += f"Video Summary:\n{ctx.summary}\n\n"
+
+        block_synopsis = ctx.extra.get("synopsis", "")
+        structural_confidence = ctx.extra.get("structural_confidence", 0.5)
+        prompt += f"Current Block #{ctx.block_index} (structural confidence: {structural_confidence:.2f}):\n"
+        prompt += f"Synopsis: {block_synopsis}\n\n"
+
+        prev_segs = repo.get_segments(ctx.context_before_ids)
+        if prev_segs:
+            prev_text = "\n".join(f"[{s.id} | {s.start:.1f}-{s.end:.1f}] {s.text[:80]}" for s in prev_segs)
+            prompt += f"Previous block context (for continuity only, do NOT include in stories):\n{prev_text}\n\n"
+
+        prompt += f"Block Segments:\n{seg_text}\n\n"
+
+        next_segs = repo.get_segments(ctx.context_after_ids)
+        if next_segs:
+            next_text = "\n".join(f"[{s.id} | {s.start:.1f}-{s.end:.1f}] {s.text[:80]}" for s in next_segs)
+            prompt += f"Next block context (for continuity only, do NOT include in stories):\n{next_text}\n\n"
+
+        prompt += f"Segment Annotations:\n{ann_text}\n\n"
+        prompt += (
+            "For each story, provide:\n"
+            "1. boundary_segments: list of segment IDs that belong to this story (in order)\n"
+            "2. story_summary: a 1-2 sentence summary\n"
+            "3. suggested_name: a short, compelling name\n"
+            "4. start_confidence, end_confidence, boundary_confidence (0.0-1.0)\n"
+            "5. ambiguous_segments: segment IDs where boundaries are uncertain\n\n"
+            "Rules:\n"
+            "- Each story should have at least 2 segments\n"
+            "- Stories should be semantically coherent\n"
+            "- A segment can only belong to one story\n"
+            "- NEVER include context segments in stories\n"
+            "- Mark uncertain boundaries in ambiguous_segments\n\n"
+            "Return JSON: {\"stories\": [...]}"
+        )
+        return prompt
+
+
 class StoryReasoner:
     def __init__(self, provider: LLMProvider):
         self.provider = provider
+        self._prompt_builder = StoryPromptBuilder()
+
+    def create_requests(
+        self,
+        blocks: list[TopicBlock],
+        segments: list,
+        annotations,  # SegmentAnnotations
+        summary: str,
+        job_id: str,
+    ) -> list[ExecutionRequest]:
+        """Create ExecutionRequests for Pass 2 — one per block."""
+        requests = []
+        for i, block in enumerate(blocks):
+            block_seg_ids = tuple(s.id for s in block.segments)
+            prev_ids = tuple(s.id for s in blocks[i - 1].segments[-2:]) if i > 0 else ()
+            next_ids = tuple(s.id for s in blocks[i + 1].segments[:2]) if i < len(blocks) - 1 else ()
+            ctx = PromptContext(
+                block_index=i,
+                segment_ids=block_seg_ids,
+                context_before_ids=prev_ids,
+                context_after_ids=next_ids,
+                summary=summary,
+                extra={
+                    "synopsis": block.synopsis,
+                    "structural_confidence": block.structural_confidence,
+                },
+            )
+            requests.append(ExecutionRequest(
+                request_id=f"{job_id}_pass2_block{i}",
+                prompt_builder=self._prompt_builder,
+                prompt_context=ctx,
+                stage=STAGE_PASS2,
+                priority=RequestPriority.NORMAL if i < 3 else RequestPriority.LOW,
+                metadata={"block_index": i},
+            ))
+        return requests
+
+    def parse_result(self, result: ExecutionResult) -> list[LLMStoryBoundary]:
+        """Parse a single ExecutionResult into LLMStoryBoundary list."""
+        raw = result.raw_response
+        boundaries = []
+        for item in raw.get("stories", []):
+            boundaries.append(LLMStoryBoundary(
+                block_ids=[item.get("block_id", 0)],
+                boundary_segments=item.get("boundary_segments", []),
+                story_summary=item.get("story_summary", ""),
+                suggested_name=item.get("suggested_name", ""),
+                start_confidence=item.get("start_confidence", 0.5),
+                end_confidence=item.get("end_confidence", 0.5),
+                boundary_confidence=item.get("boundary_confidence", 0.5),
+                structural_confidence=item.get("structural_confidence", 0.5),
+                semantic_confidence=item.get("boundary_confidence", 0.5),
+                ambiguous_segments=item.get("ambiguous_segments", []),
+            ))
+        return boundaries
 
     def detect_story_boundaries(
         self,
