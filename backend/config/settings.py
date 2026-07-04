@@ -36,6 +36,28 @@ class Settings:
     min_candidate_score: float = 0.35
     preview_top_k: int = 20
     cors_origins: list[str] = field(default_factory=lambda: ["*"])
+    # Semantic enrichment
+    semantic_provider: str = "auto"
+    semantic_batch_size: int = 10
+    semantic_context_overlap: int = 2
+    semantic_batch_delay_seconds: float = 0.0
+    semantic_min_confidence: float = 0.3
+    story_min_quality: float = 0.3
+    story_min_segments: int = 3
+    story_repair_max_extensions: int = 3
+    duplicate_similarity_threshold: float = 0.90
+    duplicate_segment_overlap: float = 0.95
+    blueprint_short_max: float = 90.0
+    segment_max_usage: int = 3
+    # Embedding clustering
+    embedding_min_window: int = 3
+    embedding_target_window: int = 5
+    embedding_max_window: int = 7
+    embedding_max_duration: float = 60.0
+    embedding_max_tokens: int = 2000
+    embedding_smoothing_window: int = 3
+    embedding_threshold_std: float = 1.5
+    embedding_z_score_max_std: float = 3.0
 
     @classmethod
     def load(cls) -> "Settings":
@@ -50,6 +72,8 @@ class Settings:
         storage = data.get("storage", {})
         job = data.get("job", {})
         thresholds = data.get("thresholds", {})
+        semantic = data.get("semantic", {})
+        embedding = data.get("embedding", {})
 
         base.storage_root = Path(storage.get("root", base.storage_root))
         base.jobs_root = Path(storage.get("jobs_root", base.jobs_root))
@@ -73,6 +97,30 @@ class Settings:
 
         base.storage_root = Path(os.getenv("TRIMORA_STORAGE_ROOT", str(base.storage_root)))
         base.jobs_root = Path(os.getenv("TRIMORA_JOBS_ROOT", str(base.jobs_root)))
+
+        # Semantic enrichment settings
+        base.semantic_provider = str(semantic.get("provider", os.getenv("SEMANTIC_PROVIDER", base.semantic_provider)))
+        base.semantic_batch_size = int(semantic.get("batch_size", base.semantic_batch_size))
+        base.semantic_context_overlap = int(semantic.get("context_overlap", base.semantic_context_overlap))
+        base.semantic_min_confidence = float(semantic.get("min_confidence", base.semantic_min_confidence))
+        base.story_min_quality = float(semantic.get("story_min_quality", base.story_min_quality))
+        base.story_min_segments = int(semantic.get("story_min_segments", base.story_min_segments))
+        base.story_repair_max_extensions = int(semantic.get("repair_max_extensions", base.story_repair_max_extensions))
+        base.duplicate_similarity_threshold = float(semantic.get("duplicate_similarity_threshold", base.duplicate_similarity_threshold))
+        base.duplicate_segment_overlap = float(semantic.get("duplicate_segment_overlap", base.duplicate_segment_overlap))
+        base.blueprint_short_max = float(semantic.get("blueprint_short_max", base.blueprint_short_max))
+        base.segment_max_usage = int(semantic.get("segment_max_usage", base.segment_max_usage))
+
+        # Embedding clustering settings
+        base.embedding_min_window = int(embedding.get("min_window", base.embedding_min_window))
+        base.embedding_target_window = int(embedding.get("target_window", base.embedding_target_window))
+        base.embedding_max_window = int(embedding.get("max_window", base.embedding_max_window))
+        base.embedding_max_duration = float(embedding.get("max_duration", base.embedding_max_duration))
+        base.embedding_max_tokens = int(embedding.get("max_tokens", base.embedding_max_tokens))
+        base.embedding_smoothing_window = int(embedding.get("smoothing_window", base.embedding_smoothing_window))
+        base.embedding_threshold_std = float(embedding.get("threshold_std", base.embedding_threshold_std))
+        base.embedding_z_score_max_std = float(embedding.get("z_score_max_std", base.embedding_z_score_max_std))
+
         return base
 
 
