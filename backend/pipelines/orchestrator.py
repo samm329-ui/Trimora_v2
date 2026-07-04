@@ -7,12 +7,13 @@ from typing import Dict
 from backend.models.job import JobStatus
 from backend.pipelines.production_pipeline import ProductionPipeline
 from backend.storage.job_store import JobStore
+from backend.execution.engine import ExecutionEngine
 
 
 class Orchestrator:
-    def __init__(self, job_store: JobStore):
+    def __init__(self, job_store: JobStore, engine: ExecutionEngine | None = None):
         self.job_store = job_store
-        self.pipeline = ProductionPipeline(job_store)
+        self.pipeline = ProductionPipeline(job_store, engine=engine)
         self._tasks: Dict[str, asyncio.Task] = {}
 
     async def start_job(self, job_id: str) -> None:
