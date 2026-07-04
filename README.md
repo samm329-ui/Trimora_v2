@@ -17,6 +17,7 @@
 - [Features](#features)
 - [Tech Stack](#tech-stack)
 - [Architecture](#architecture)
+- [Execution Layer V2](#execution-layer-v2)
 - [Semantic Enrichment Pipeline](#semantic-enrichment-pipeline)
 - [Project Structure](#project-structure)
 - [Production Pipeline](#production-pipeline)
@@ -41,10 +42,12 @@ Trimora takes a long video (podcast, lecture, interview) and automatically extra
 
 | Video Length | Chunks | Transcription | Semantic | Total |
 |---|---|---|---|---|
-| 30 minutes | 40 | ~160s | ~15s | ~3 min |
-| 1 hour | 40 | ~160s | ~15s | ~3 min |
-| 3 hours | 120 | ~480s | ~30s | ~9 min |
-| 4 hours | 160 | ~640s | ~40s | ~12 min |
+| 30 minutes | 40 | ~160s | ~8s | ~3 min |
+| 1 hour | 40 | ~160s | ~8s | ~3 min |
+| 3 hours | 120 | ~480s | ~20s | ~9 min |
+| 4 hours | 160 | ~640s | ~25s | ~12 min |
+
+> **Execution Layer V2** reduces semantic processing from ~6 min to ~2-3 min (~40-50% improvement) through async parallel execution, provider-agnostic request handling, and concurrent worker pools.
 
 ---
 
@@ -55,6 +58,7 @@ Trimora takes a long video (podcast, lecture, interview) and automatically extra
 | Audio-First Processing | Extract audio once, process independently of video |
 | Parallel Transcription | Rate-limited concurrent processing (Groq/Gemini) |
 | Adaptive Chunking | Dynamic chunk sizes based on video duration |
+| Execution Layer V2 | Provider-agnostic async engine with priority queuing |
 | Embedding Topic Clustering | sentence-transformers for adaptive block boundaries |
 | LLM Semantic Enrichment | Pass 1: segment annotation, Pass 2: story boundary detection |
 | Structured Summary | Global video summary as root semantic artifact |
@@ -170,6 +174,163 @@ flowchart LR
 
 ---
 
+## Execution Layer V2
+
+The Execution Layer V2 replaces service-driven LLM execution with a provider-agnostic engine. This reduces semantic processing time by ~40-50% through async parallel execution and proper rate limiting.
+
+### Architecture
+
+```mermaid
+flowchart TB
+    subgraph App ["Application Start"]
+        ENGINE["ExecutionEngine\n(created once)"]
+        SESSION["ProviderSession\n(rate limiting + middleware)"]
+        ENGINE --> SESSION
+    end
+
+    subgraph Pipeline ["Per Job"]
+        PL["Pipeline Layer"]
+        PL -->|"creates ExecutionRequest\n(immutable: builder + context)"| HANDLE["ExecutionHandle\n(snapshot, cancel)"]
+        HANDLE --> EXEC["PipelineExecutor\n(submits stages, waits)"]
+        EXEC -->|"delegates to"| ENGINE
+    end
+
+    subgraph Providers ["Provider Layer"]
+        SESSION --> GROQ["Groq API"]
+        SESSION --> GEMINI["Gemini API"]
+    end
+
+    style ENGINE fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
+    style SESSION fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
+    style PL fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
+    style HANDLE fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
+    style EXEC fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
+```
+
+### Key Components
+
+| Component | Location | Purpose |
+|---|---|---|
+| `ExecutionEngine` | `backend/execution/engine.py` | Generic task runner with priority queue, workers, retries, timeouts |
+| `PipelineExecutor` | `backend/execution/engine.py` | Orchestrates pipeline stages; does NOT parse results |
+| `ProviderSession` | `backend/execution/provider_session.py` | Rate limiting, token estimation, middleware chain |
+| `AsyncRateLimiter` | `backend/execution/provider_session.py` | Sliding-window token bucket (never blocks event loop) |
+| `SegmentRepository` | `backend/execution/repository.py` | Read-only data access for prompt construction |
+| `PromptBuilder` | `backend/execution/models.py` | Abstract base; each service implements its own |
+| `PromptContext` | `backend/execution/models.py` | Lightweight, immutable context (IDs, not full objects) |
+| `ExecutionProfiler` | `backend/execution/profiler.py` | Event-based timing and metrics collection |
+
+### Data Types
+
+```mermaid
+classDiagram
+    class ExecutionRequest {
+        +str request_id
+        +PromptBuilder prompt_builder
+        +PromptContext prompt_context
+        +PipelineStage stage
+        +RequestPriority priority
+        +RetryPolicy retry_policy
+        +TimeoutPolicy timeout_policy
+    }
+    class ExecutionHandle {
+        +Future~ExecutionResult~ _future
+        +bool _cancelled
+        +result() ExecutionResult
+        +cancel() bool
+        +snapshot() HandleSnapshot
+    }
+    class ExecutionResult {
+        +str request_id
+        +dict raw_response
+        +str status
+        +RequestMetrics metrics
+        +Exception error
+        +bool retryable
+    }
+    class PromptContext {
+        +int block_index
+        +int batch_index
+        +tuple~int~ segment_ids
+        +str summary
+        +dict extra
+    }
+    class PromptBuilder {
+        <<abstract>>
+        +build(context, repo) str
+    }
+    ExecutionRequest --> PromptBuilder
+    ExecutionRequest --> PromptContext
+    ExecutionHandle --> ExecutionResult
+    PromptBuilder --> PromptContext : uses
+```
+
+### Request Flow
+
+```mermaid
+sequenceDiagram
+    participant P as Pipeline
+    participant PE as PipelineExecutor
+    participant E as ExecutionEngine
+    participant Q as Priority Queue
+    participant W as Worker
+    participant S as ProviderSession
+    participant L as LLM Provider
+
+    P->>PE: submit_stage(STAGE_PASS1, requests, repo)
+    PE->>E: submit(request, repo)
+    E->>Q: put((priority, timestamp, request, repo))
+    E-->>P: ExecutionHandle
+
+    loop Worker Loop
+        W->>Q: get()
+        Q-->>W: (priority, ts, request, repo)
+        W->>W: prompt = request.prompt_builder.build(request.prompt_context, repo)
+        W->>S: execute(prompt, request_id)
+        S->>S: rate_limiter.acquire(estimated_tokens)
+        S->>L: complete(prompt)
+        L-->>S: raw_response
+        S-->>W: ExecutionResult
+        W->>W: handle._future.set_result(result)
+    end
+
+    P->>PE: wait_for_stage(STAGE_PASS1)
+    PE->>W: await handle.result()
+    W-->>P: list[ExecutionHandle]
+    P->>P: parse_result(result) for each handle
+```
+
+### Design Principles
+
+| Principle | Implementation |
+|---|---|
+| **ExecutionRequest is immutable** | `frozen=True` dataclass; PromptContext contains IDs, not objects |
+| **PromptBuilder stays in each service** | Each service owns its prompt construction logic |
+| **Response parsing stays in each service** | Each service owns `parse_result()` — engine never parses |
+| **ProviderSession owns rate limiting** | AsyncRateLimiter uses sliding window; lock released before sleep |
+| **PipelineExecutor only orchestrates** | Registers stages, submits requests, waits — no result parsing |
+| **ExecutionEngine owns scheduling** | Priority queue, worker pools, retries, timeouts, event emission |
+| **SegmentRepository is read-only** | Created per job; PromptBuilder resolves IDs through it |
+| **Engine lifetime is application-wide** | Created once at app start, shared across all jobs |
+| **Middleware wraps the provider** | Logging, auth, compression at provider level, not scheduling level |
+| **Error classification** | `_is_retryable()` differentiates rate limits, timeouts, network, invalid response, provider errors |
+
+### Event-Based Profiling
+
+The engine emits events for monitoring and profiling:
+
+| Event | When | Payload |
+|---|---|---|
+| `request_queued` | Request submitted to queue | request_id, stage, priority, queue_size |
+| `request_started` | Worker picks up request | request_id, attempt |
+| `request_completed` | Successful completion | request_id, tokens, execution_time |
+| `request_failed` | Non-retryable failure | request_id, error, retryable |
+| `request_retry` | Retryable failure | request_id, attempt, error |
+| `request_timeout` | Execution timeout | request_id |
+| `request_cancelled` | Handle cancelled | request_id |
+
+---
+
 ## Semantic Enrichment Pipeline
 
 The semantic enrichment layer uses an **embedding-first architecture** that dramatically reduces LLM calls while improving quality through global context.
@@ -183,14 +344,15 @@ flowchart TB
     BLOCKS --> SYNOPSIS["Deterministic Synopsis\nper Block"]
     SYNOPSIS --> PRIORITY["Priority Queue\n(scheduling only)"]
     
-    BLOCKS --> SUMMARY["Structured Summary\n(1 LLM call)"]
-    SUMMARY -->|"main_topic, major_topics,\nnarrative_arc, key_entities"| PASS1["Pass 1: Segment Annotation"]
+    BLOCKS --> EXEC["Execution Layer V2"]
+    EXEC --> SUMMARY["Structured Summary\n(1 LLM call via ProviderSession)"]
+    SUMMARY -->|"main_topic, major_topics,\nnarrative_arc, key_entities"| PASS1["Pass 1: Segment Annotation\n(parallel batches via ExecutionEngine)"]
     
     PRIORITY --> PASS1
     BLOCKS --> PASS1
     PASS1 -->|"timeline order,\nblock boundaries,\nsummary context"| ANNOTATIONS["Segment Annotations"]
     
-    ANNOTATIONS --> PASS2["Pass 2: Story Reasoning"]
+    ANNOTATIONS --> PASS2["Pass 2: Story Reasoning\n(parallel blocks via ExecutionEngine)"]
     BLOCKS --> PASS2
     SUMMARY --> PASS2
     PASS2 -->|"block-based prompts,\nadjacent block context"| BOUNDARIES["Story Boundaries"]
@@ -202,6 +364,7 @@ flowchart TB
     style EMB fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
     style BLOCKS fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
     style SYNOPSIS fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
+    style EXEC fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
     style SUMMARY fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
     style PASS1 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
     style PASS2 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
@@ -238,6 +401,8 @@ Segments are grouped into topic blocks using sliding window embeddings:
 - **Structural vs semantic confidence kept separate** — embedding clustering provides structural confidence, LLM provides semantic confidence
 - **Block embeddings persisted** — reusable for search, duplicate detection, and recommendations
 - **Summary includes representative excerpts** — grounded in actual transcript wording, not just synopses
+- **PromptBuilder per service** — each service owns its prompt construction; PromptContext is lightweight (IDs, not objects)
+- **Execution Layer for LLM calls** — Summary, Pass 1, Pass 2 run through ProviderSession with async rate limiting and parallel workers
 
 ---
 
@@ -249,7 +414,7 @@ trimora/
 │   ├── main.py                          # Uvicorn entry point
 │   ├── app/
 │   │   ├── app.py                       # FastAPI app factory
-│   │   └── lifespan.py                  # Startup/shutdown lifecycle
+│   │   └── lifespan.py                  # Startup/shutdown lifecycle (engine lifecycle)
 │   ├── api/
 │   │   ├── routes/
 │   │   │   ├── process.py               # POST /api/process
@@ -267,6 +432,13 @@ trimora/
 │   │   ├── ranking_config.py            # Ranking engine parameters
 │   │   ├── semantic_config.py           # Story quality weights, rejection thresholds
 │   │   └── worker_limits.py             # Worker pool limits
+│   ├── execution/                       # Execution Layer V2 (provider-agnostic engine)
+│   │   ├── __init__.py                  # Package exports
+│   │   ├── models.py                    # PromptBuilder, PromptContext, ExecutionRequest, etc.
+│   │   ├── provider_session.py          # ProviderSession, AsyncRateLimiter, Middleware
+│   │   ├── repository.py                # SegmentRepository (read-only data access)
+│   │   ├── engine.py                    # ExecutionEngine + PipelineExecutor
+│   │   └── profiler.py                  # Event-based profiling
 │   ├── models/
 │   │   ├── clip.py                      # ClipCandidate, PreviewManifest
 │   │   ├── feature.py                   # SegmentFeatures
@@ -291,24 +463,24 @@ trimora/
 │   │   ├── embedding_clusterer.py       # Topic block clustering
 │   │   ├── block_synopsis_generator.py  # Deterministic block synopses
 │   │   ├── priority_ranker.py           # Block priority ranking
-│   │   ├── transcript_summarizer.py     # Structured video summary
-│   │   ├── semantic_service.py          # Pass 1: segment annotation
-│   │   ├── story_reasoner.py            # Pass 2: story boundary detection
+│   │   ├── transcript_summarizer.py     # Structured video summary (PromptBuilder + create_request)
+│   │   ├── semantic_service.py          # Pass 1: segment annotation (PromptBuilder + create_requests)
+│   │   ├── story_reasoner.py            # Pass 2: story boundary detection (PromptBuilder + create_requests)
 │   │   ├── story_detector.py            # Candidate formation + repair
 │   │   ├── story_validator.py           # Quality scoring + rejection
 │   │   ├── coverage_analyzer.py         # Segment coverage analysis
 │   │   ├── blueprint_generator.py       # Story-to-blueprint conversion
 │   │   ├── duplicate_guard.py           # Composite duplicate detection
-│   │   ├── llm_provider.py              # Groq/Gemini/Rule-based LLM providers
+│   │   ├── llm_provider.py              # Groq/Gemini/Rule-based LLM providers + estimate_tokens()
 │   │   ├── preview_service.py           # Preview manifest building
 │   │   ├── rendering_service.py         # FFmpeg clip rendering
 │   │   └── storage_service.py           # File storage helpers
 │   ├── pipelines/
-│   │   ├── production_pipeline.py       # Main processing pipeline
-│   │   ├── orchestrator.py              # Job orchestration
+│   │   ├── production_pipeline.py       # Main pipeline (uses ExecutionEngine + PipelineExecutor)
+│   │   ├── orchestrator.py              # Job orchestration (accepts engine parameter)
 │   │   ├── analytics_pipeline.py        # Analytics summarization
 │   │   ├── learning_pipeline.py         # Background learning
-│   │   └── event_bus.py                 # Pipeline event system
+│   │   └── event_bus.py                 # Pipeline event system (with subscribers)
 │   ├── ranking/
 │   │   ├── pipeline.py                  # RankingEngine (13-stage)
 │   │   ├── models.py                    # Candidate, RankedClip, RankingResult
@@ -364,7 +536,7 @@ trimora/
 
 ## Production Pipeline
 
-The pipeline processes videos through sequential stages with cancellation checks and error handling between each stage.
+The pipeline processes videos through sequential stages with cancellation checks and error handling between each stage. LLM calls (Summary, Pass 1, Pass 2) are executed through the **Execution Layer V2** for parallel execution.
 
 ```mermaid
 flowchart TB
@@ -392,9 +564,10 @@ flowchart TB
     BLOCKS --> SYN[Block Synopses]
     SYN --> PRI[Priority Queue]
 
-    BLOCKS --> SUM["Structured Summary\n(1 LLM call)"]
-    SUM --> P1["Pass 1: Segment Annotation\n(with block boundaries)"]
-    P1 --> P2["Pass 2: Story Reasoning\n(block-based prompts)"]
+    BLOCKS --> EXEC_LAYER["Execution Layer V2\n(async parallel)"]
+    EXEC_LAYER --> SUM["Structured Summary\n(1 LLM call)"]
+    SUM --> P1["Pass 1: Segment Annotation\n(block-based parallel batches)"]
+    P1 --> P2["Pass 2: Story Reasoning\n(block-based parallel)"]
 
     P2 --> DET[Story Detection]
     DET --> REPAIR[Story Repair]
@@ -421,6 +594,7 @@ flowchart TB
     style FAIL3 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
     style EMB fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
     style BLOCKS fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
+    style EXEC_LAYER fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
     style SUM fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
     style P1 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
     style P2 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
@@ -440,9 +614,9 @@ flowchart TB
 | 8 | Feature Extraction | `analyzing` | 70% | Compute audio energy, text density, structure, patterns |
 | 9 | Embedding Clustering | `analyzing` | 70% | Group segments into topic blocks |
 | 10 | Block Synopses | `analyzing` | 71% | Generate deterministic synopses per block |
-| 11 | Structured Summary | `analyzing` | 72% | Generate global video summary (1 LLM call) |
-| 12 | Pass 1 | `analyzing` | 73% | Segment annotation with block boundaries |
-| 13 | Pass 2 | `analyzing` | 74% | Story boundary detection (block-based) |
+| 11 | Structured Summary | `analyzing` | 72% | Global video summary (via Execution Layer) |
+| 12 | Pass 1 | `analyzing` | 73% | Segment annotation (parallel batches via Execution Layer) |
+| 13 | Pass 2 | `analyzing` | 74% | Story boundary detection (parallel via Execution Layer) |
 | 14 | Story Detection | `analyzing` | 75% | Candidate formation and repair |
 | 15 | Story Validation | `analyzing` | 78% | Quality scoring and rejection |
 | 16 | Blueprint Generation | `analyzing` | 80% | Story-to-blueprint conversion |
@@ -840,6 +1014,8 @@ flowchart TD
 | 1 (Primary) | Groq | Llama 3.1 | API key missing, rate limit |
 | 2 (Fallback) | Gemini | gemini-2.0-flash | API key missing |
 | 3 (Rule-based) | Local | Heuristic | No API keys configured |
+
+> All LLM calls go through `ProviderSession` which handles rate limiting, token estimation, and middleware. The `ExecutionEngine` classifies errors as retryable or non-retryable using `_is_retryable()`.
 
 ---
 
