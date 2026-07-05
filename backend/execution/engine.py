@@ -45,6 +45,7 @@ class ExecutionEngine:
         self._metrics = ExecutionMetrics()
         self._active_handles: dict[str, ExecutionHandle] = {}
         self._on_event = on_event
+        self._counter = 0
 
     async def start(self, num_workers: int = 3):
         """Start worker loops."""
@@ -71,7 +72,8 @@ class ExecutionEngine:
         """
         handle = ExecutionHandle(request)
         self._active_handles[request.request_id] = handle
-        self._queue.put_nowait((request.priority.value, time.monotonic(), request, repo))
+        self._counter += 1
+        self._queue.put_nowait((request.priority.value, time.monotonic(), self._counter, request, repo))
         self._metrics.queue_length = self._queue.qsize()
 
         # Emit event synchronously (fire-and-forget via create_task if needed)
@@ -109,10 +111,10 @@ class ExecutionEngine:
                 items.append(self._queue.get_nowait())
             except asyncio.QueueEmpty:
                 break
-        for priority, ts, request, repo in items:
+        for priority, ts, _seq, request, repo in items:
             handle = self._active_handles.get(request.request_id)
             if not (handle and handle.is_cancelled):
-                self._queue.put_nowait((priority, ts, request, repo))
+                self._queue.put_nowait((priority, ts, _seq, request, repo))
         self._metrics.queue_length = self._queue.qsize()
 
     async def _emit(self, event_name: str, payload: dict[str, Any]):
@@ -128,7 +130,7 @@ class ExecutionEngine:
         cleanup_counter = 0
         while self._running:
             try:
-                priority, ts, request, repo = await asyncio.wait_for(
+                priority, ts, _seq, request, repo = await asyncio.wait_for(
                     self._queue.get(), timeout=1.0
                 )
             except asyncio.TimeoutError:
