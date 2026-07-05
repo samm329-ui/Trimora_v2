@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,16 +38,40 @@ class TranscriptionResult:
 
 
 # ---------------------------------------------------------------------------
-# Groq
+# Groq round-robin helpers
 # ---------------------------------------------------------------------------
 
-def _build_groq_client() -> Groq | None:
+@dataclass
+class _GroqEntry:
+    """A Groq client paired with its own rate limiter."""
+    client: Groq
+    rate_limiter: "_RateLimiter"
+
+
+def _build_groq_entries() -> list[_GroqEntry]:
+    """Build one Groq client per API key, each with its own rate limiter."""
     if not _HAVE_GROQ:
-        return None
-    key = settings.groq_api_key or os.getenv("GROQ_API_KEY", "")
-    if not key:
-        return None
-    return Groq(api_key=key)
+        return []
+
+    keys: list[str] = []
+    if settings.groq_api_key:
+        keys.append(settings.groq_api_key)
+    for key in settings.groq_api_keys:
+        if key not in keys:
+            keys.append(key)
+
+    if not keys:
+        return []
+
+    entries = []
+    for key in keys:
+        client = Groq(api_key=key)
+        # 15 req/min per key (free tier allows 20/min, leave headroom)
+        limiter = _RateLimiter(max_requests=15, window_seconds=60)
+        entries.append(_GroqEntry(client=client, rate_limiter=limiter))
+
+    logger.info("Groq transcription: %d API key(s) configured for round-robin", len(entries))
+    return entries
 
 
 def _groq_transcribe(client: Groq, chunk_path: Path, chunk_id: str, start: float, end: float) -> TranscriptionResult:
@@ -155,34 +180,41 @@ class _RateLimiter:
 
 class TranscriptionService:
     def __init__(self) -> None:
-        self._groq: Groq | None = None
+        self._groq_entries: list[_GroqEntry] = []
+        self._groq_index: int = 0
+        self._groq_lock: threading.Lock = threading.Lock()
         self._gemini: google_genai.Client | None = None
-        self._rate_limiter: _RateLimiter | None = None
         provider = settings.transcription_provider
 
         if provider == "groq":
-            self._groq = _build_groq_client()
-            if self._groq is None:
-                logger.warning("GROQ_API_KEY not set, falling back to Gemini")
+            self._groq_entries = _build_groq_entries()
+            if not self._groq_entries:
+                logger.warning("No GROQ_API_KEY(s) set, falling back to Gemini")
                 self._gemini = _build_gemini_client()
         elif provider == "gemini":
             self._gemini = _build_gemini_client()
             if self._gemini is None:
                 logger.warning("GEMINI_API_KEY not set, falling back to Groq")
-                self._groq = _build_groq_client()
+                self._groq_entries = _build_groq_entries()
 
-        # Rate limit Groq: 15 req/min with 4s minimum gap (free tier is 20/min)
-        if self._groq is not None:
-            self._rate_limiter = _RateLimiter(max_requests=15, window_seconds=60)
+    def _next_groq_entry(self) -> _GroqEntry | None:
+        """Thread-safe round-robin selection across Groq API keys."""
+        if not self._groq_entries:
+            return None
+        with self._groq_lock:
+            entry = self._groq_entries[self._groq_index]
+            self._groq_index = (self._groq_index + 1) % len(self._groq_entries)
+        return entry
 
     async def transcribe_chunk(self, chunk_id: str, chunk_path: Path, start: float, end: float) -> TranscriptionResult:
-        if self._rate_limiter is not None:
-            await self._rate_limiter.acquire()
-        return await asyncio.to_thread(self._transcribe_sync, chunk_id, chunk_path, start, end)
-
-    def _transcribe_sync(self, chunk_id: str, chunk_path: Path, start: float, end: float) -> TranscriptionResult:
-        if self._groq is not None:
-            return _groq_transcribe(self._groq, chunk_path, chunk_id, start, end)
+        entry = self._next_groq_entry()
+        if entry is not None:
+            await entry.rate_limiter.acquire()
+            return await asyncio.to_thread(
+                _groq_transcribe, entry.client, chunk_path, chunk_id, start, end
+            )
         if self._gemini is not None:
-            return _gemini_transcribe(self._gemini, chunk_path, chunk_id, start, end)
-        return _stub_transcribe(chunk_id, start, end)
+            return await asyncio.to_thread(
+                _gemini_transcribe, self._gemini, chunk_path, chunk_id, start, end
+            )
+        return await asyncio.to_thread(_stub_transcribe, chunk_id, start, end)
