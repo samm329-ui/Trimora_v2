@@ -6,6 +6,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from collections import deque
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -99,9 +100,9 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
-# Global token bucket shared across all GroqProvider instances
-_groq_bucket = TokenBucket(capacity=5500, window_seconds=60.0)  # 500 buffer under 6000 limit
-
+# ---------------------------------------------------------------------------
+# LLMProvider — abstract base
+# ---------------------------------------------------------------------------
 
 class LLMProvider(ABC):
     @abstractmethod
@@ -113,11 +114,51 @@ class LLMProvider(ABC):
         return max(1, len(text) // 4)
 
 
+# ---------------------------------------------------------------------------
+# ProviderEntry — identifies a provider in the router
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ProviderEntry:
+    id: str
+    provider: LLMProvider
+
+
+# ---------------------------------------------------------------------------
+# ProviderRouter — round-robin across multiple LLMProviders
+# ---------------------------------------------------------------------------
+
+class ProviderRouter(LLMProvider):
+    """Round-robin router across multiple LLMProviders.
+
+    Implements LLMProvider so it's a drop-in replacement anywhere a single
+    provider is expected. Each sub-provider owns its own rate-limit bucket.
+    """
+
+    def __init__(self, providers: list[ProviderEntry]):
+        if not providers:
+            raise ValueError("ProviderRouter requires at least one provider.")
+        self._providers = providers
+        self._index = 0
+        self._lock = threading.Lock()
+
+    def complete(self, prompt: str, response_format: str = "json") -> dict:
+        with self._lock:
+            entry = self._providers[self._index]
+            self._index = (self._index + 1) % len(self._providers)
+
+        model = getattr(entry.provider, "model", "unknown")
+        logger.info("ProviderRouter: provider=%s model=%s", entry.id, model)
+
+        return entry.provider.complete(prompt, response_format)
+
+
 class GroqProvider(LLMProvider):
     def __init__(self, api_key: str, model: str = "llama-3.1-8b-instant"):
         self.api_key = api_key
         self.model = model
         self._client = None
+        self._bucket = TokenBucket(capacity=5500, window_seconds=60.0)
 
     def _get_client(self):
         if self._client is None:
@@ -140,7 +181,7 @@ class GroqProvider(LLMProvider):
 
         # Estimate tokens and wait for capacity BEFORE making the call
         estimated = estimate_tokens(prompt) + 200  # +200 for response overhead
-        waited = _groq_bucket.wait_for_capacity(estimated, timeout=timeout)
+        waited = self._bucket.wait_for_capacity(estimated, timeout=timeout)
         if waited > 1:
             logger.info("Rate-limited: waited %.1fs for token capacity", waited)
 
@@ -156,7 +197,7 @@ class GroqProvider(LLMProvider):
                     actual = response.usage.total_tokens
                 else:
                     actual = estimated
-                _groq_bucket.consume(actual)
+                self._bucket.consume(actual)
 
                 content = response.choices[0].message.content or "{}"
                 return json.loads(content)
@@ -173,7 +214,7 @@ class GroqProvider(LLMProvider):
                     wait = min(wait + 1.0, remaining)
 
                 # Record the tokens we tried to use so the bucket knows
-                _groq_bucket.consume(estimated)
+                self._bucket.consume(estimated)
 
                 logger.warning("Groq rate-limit despite pre-check, retry %d/%d in %.1fs",
                                attempt + 1, max_retries, wait)
@@ -198,6 +239,7 @@ class GeminiProvider(LLMProvider):
         self.api_key = api_key
         self.model = model
         self._client = None
+        self._bucket = TokenBucket(capacity=30000, window_seconds=60.0)
 
     def _get_client(self):
         if self._client is None:
@@ -228,10 +270,28 @@ class RuleBasedProvider(LLMProvider):
 def create_provider(provider_name: str = "auto") -> LLMProvider:
     from backend.config.settings import settings
 
-    if provider_name == "groq" or (provider_name == "auto" and settings.groq_api_key):
-        return GroqProvider(settings.groq_api_key)
-    elif provider_name == "gemini" or (provider_name == "auto" and settings.gemini_api_key):
-        return GeminiProvider(settings.gemini_api_key)
-    else:
+    entries: list[ProviderEntry] = []
+    idx = 1
+
+    # Collect available providers
+    if settings.groq_api_key:
+        entries.append(ProviderEntry(f"groq-{idx}", GroqProvider(settings.groq_api_key)))
+        idx += 1
+
+    for key in settings.groq_api_keys:
+        entries.append(ProviderEntry(f"groq-{idx}", GroqProvider(key)))
+        idx += 1
+
+    if settings.gemini_api_key:
+        entries.append(ProviderEntry("gemini", GeminiProvider(settings.gemini_api_key)))
+
+    if not entries:
         logger.warning("No LLM API key configured, using rule-based fallback")
         return RuleBasedProvider()
+
+    if len(entries) == 1:
+        return entries[0].provider
+
+    logger.info("ProviderRouter: distributing across %d providers: %s",
+                len(entries), ", ".join(e.id for e in entries))
+    return ProviderRouter(entries)
