@@ -29,6 +29,7 @@ class Settings:
     retry_count: int = 3
     transcription_provider: str = "stub"
     groq_api_key: str = ""
+    groq_api_keys: list[str] = field(default_factory=list)
     gemini_api_key: str = ""
     transcription_timeout_seconds: int = 600
     export_timeout_seconds: int = 600
@@ -89,6 +90,11 @@ class Settings:
         base.transcription_provider = str(job.get("transcription_provider", base.transcription_provider))
         base.transcription_timeout_seconds = int(job.get("transcription_timeout_seconds", base.transcription_timeout_seconds))
         base.groq_api_key = str(os.getenv("GROQ_API_KEY", ""))
+        base.groq_api_keys = []
+        for i in range(1, 10):
+            key = os.getenv(f"GROQ_API_KEY_{i}", "")
+            if key:
+                base.groq_api_keys.append(key)
         base.gemini_api_key = str(os.getenv("GEMINI_API_KEY", ""))
         base.export_timeout_seconds = int(job.get("export_timeout_seconds", base.export_timeout_seconds))
         base.min_segment_seconds = float(thresholds.get("min_segment_seconds", base.min_segment_seconds))
