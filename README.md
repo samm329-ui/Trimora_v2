@@ -5,7 +5,7 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg)](https://fastapi.tiangolo.com/)
 [![React 18](https://img.shields.io/badge/React-18-61DAFB.svg)](https://react.dev/)
 [![FFmpeg](https://img.shields.io/badge/FFmpeg-FFmpeg-orange.svg)](https://ffmpeg.org/)
-[![Tests](https://img.shields.io/badge/tests-126%20passing-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-150%20passing-brightgreen.svg)]()
 
 > AI-powered platform that transforms long-form videos into engaging short-form clips using an audio-first processing pipeline with embedding-based semantic enrichment and LLM story reasoning.
 
@@ -18,6 +18,7 @@
 - [Tech Stack](#tech-stack)
 - [Architecture](#architecture)
 - [Execution Layer V2](#execution-layer-v2)
+- [ProviderRouter](#providerrouter-multi-key-load-balancing)
 - [Semantic Enrichment Pipeline](#semantic-enrichment-pipeline)
 - [Project Structure](#project-structure)
 - [Production Pipeline](#production-pipeline)
@@ -47,7 +48,7 @@ Trimora takes a long video (podcast, lecture, interview) and automatically extra
 | 3 hours | 120 | ~480s | ~20s | ~9 min |
 | 4 hours | 160 | ~640s | ~25s | ~12 min |
 
-> **Execution Layer V2** reduces semantic processing from ~6 min to ~2-3 min (~40-50% improvement) through async parallel execution, provider-agnostic request handling, and concurrent worker pools.
+> **Execution Layer V2** reduces semantic processing from ~6 min to ~2-3 min (~40-50% improvement) through async parallel execution, provider-agnostic request handling, and concurrent worker pools. **ProviderRouter** distributes load across multiple Groq API keys for improved throughput.
 
 ---
 
@@ -59,6 +60,7 @@ Trimora takes a long video (podcast, lecture, interview) and automatically extra
 | Parallel Transcription | Rate-limited concurrent processing (Groq/Gemini) |
 | Adaptive Chunking | Dynamic chunk sizes based on video duration |
 | Execution Layer V2 | Provider-agnostic async engine with priority queuing |
+| ProviderRouter | Thread-safe round-robin across multiple API keys/providers |
 | Embedding Topic Clustering | sentence-transformers for adaptive block boundaries |
 | LLM Semantic Enrichment | Pass 1: segment annotation, Pass 2: story boundary detection |
 | Structured Summary | Global video summary as root semantic artifact |
@@ -137,6 +139,14 @@ flowchart LR
         SV --> BG["Blueprint Generation"]
     end
 
+    subgraph LLMProviders ["LLM Providers (via ProviderRouter)"]
+        SUM --> ROUTER["ProviderRouter\n(round-robin)"]
+        P1 --> ROUTER
+        P2 --> ROUTER
+        ROUTER --> GROQ_MULTIPLE["Groq API\n(multiple keys)"]
+        ROUTER --> GEMINI_LLM["Gemini API"]
+    end
+
     subgraph Output ["Output"]
         FEAT --> RANK["Ranking Engine"]
         RANK --> PREV["Preview"]
@@ -196,8 +206,11 @@ flowchart TB
     end
 
     subgraph Providers ["Provider Layer"]
-        SESSION --> GROQ["Groq API"]
-        SESSION --> GEMINI["Gemini API"]
+        SESSION --> ROUTER["ProviderRouter\n(round-robin)"]
+        ROUTER --> GROQ1["groq-1\n(5,500 tok/60s)"]
+        ROUTER --> GROQ2["groq-2\n(5,500 tok/60s)"]
+        ROUTER --> GROQ3["groq-3\n(5,500 tok/60s)"]
+        ROUTER --> GEMINI["gemini\n(30,000 tok/60s)"]
     end
 
     style ENGINE fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
@@ -205,6 +218,7 @@ flowchart TB
     style PL fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
     style HANDLE fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
     style EXEC fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
+    style ROUTER fill:#06b6d4,color:#fff,stroke:#0891b2,stroke-width:2px
 ```
 
 ### Key Components
@@ -215,6 +229,7 @@ flowchart TB
 | `PipelineExecutor` | `backend/execution/engine.py` | Orchestrates pipeline stages; does NOT parse results |
 | `ProviderSession` | `backend/execution/provider_session.py` | Rate limiting, token estimation, middleware chain |
 | `AsyncRateLimiter` | `backend/execution/provider_session.py` | Sliding-window token bucket (never blocks event loop) |
+| `ProviderRouter` | `backend/services/llm_provider.py` | Thread-safe round-robin across multiple API keys/providers |
 | `SegmentRepository` | `backend/execution/repository.py` | Read-only data access for prompt construction |
 | `PromptBuilder` | `backend/execution/models.py` | Abstract base; each service implements its own |
 | `PromptContext` | `backend/execution/models.py` | Lightweight, immutable context (IDs, not full objects) |
@@ -275,7 +290,8 @@ sequenceDiagram
     participant Q as Priority Queue
     participant W as Worker
     participant S as ProviderSession
-    participant L as LLM Provider
+    participant R as ProviderRouter
+    participant L as LLM Provider (Groq/Gemini)
 
     P->>PE: submit_stage(STAGE_PASS1, requests, repo)
     PE->>E: submit(request, repo)
@@ -288,8 +304,11 @@ sequenceDiagram
         W->>W: prompt = request.prompt_builder.build(request.prompt_context, repo)
         W->>S: execute(prompt, request_id)
         S->>S: rate_limiter.acquire(estimated_tokens)
-        S->>L: complete(prompt)
-        L-->>S: raw_response
+        S->>R: complete(prompt)
+        R->>R: next() — round-robin selection
+        R->>L: complete(prompt)
+        L-->>R: raw_response
+        R-->>S: raw_response
         S-->>W: ExecutionResult
         W->>W: handle._future.set_result(result)
     end
@@ -314,6 +333,7 @@ sequenceDiagram
 | **Engine lifetime is application-wide** | Created once at app start, shared across all jobs |
 | **Middleware wraps the provider** | Logging, auth, compression at provider level, not scheduling level |
 | **Error classification** | `_is_retryable()` differentiates rate limits, timeouts, network, invalid response, provider errors |
+| **ProviderRouter distributes load** | Thread-safe round-robin across multiple API keys; per-instance TokenBucket |
 
 ### Event-Based Profiling
 
@@ -345,7 +365,8 @@ flowchart TB
     SYNOPSIS --> PRIORITY["Priority Queue\n(scheduling only)"]
     
     BLOCKS --> EXEC["Execution Layer V2"]
-    EXEC --> SUMMARY["Structured Summary\n(1 LLM call via ProviderSession)"]
+    EXEC --> ROUTER3["ProviderRouter\n(round-robin across keys)"]
+    ROUTER3 --> SUMMARY["Structured Summary\n(1 LLM call)"]
     SUMMARY -->|"main_topic, major_topics,\nnarrative_arc, key_entities"| PASS1["Pass 1: Segment Annotation\n(parallel batches via ExecutionEngine)"]
     
     PRIORITY --> PASS1
@@ -365,6 +386,7 @@ flowchart TB
     style BLOCKS fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
     style SYNOPSIS fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
     style EXEC fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
+    style ROUTER3 fill:#06b6d4,color:#fff,stroke:#0891b2,stroke-width:2px
     style SUMMARY fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
     style PASS1 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
     style PASS2 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
@@ -471,7 +493,7 @@ trimora/
 │   │   ├── coverage_analyzer.py         # Segment coverage analysis
 │   │   ├── blueprint_generator.py       # Story-to-blueprint conversion
 │   │   ├── duplicate_guard.py           # Composite duplicate detection
-│   │   ├── llm_provider.py              # Groq/Gemini/Rule-based LLM providers + estimate_tokens()
+│   │   ├── llm_provider.py              # Groq/Gemini/Rule-based LLM providers + ProviderRouter + estimate_tokens()
 │   │   ├── preview_service.py           # Preview manifest building
 │   │   ├── rendering_service.py         # FFmpeg clip rendering
 │   │   └── storage_service.py           # File storage helpers
@@ -513,7 +535,7 @@ trimora/
 │   │   ├── time_utils.py                # Time formatting
 │   │   ├── validation.py                # Input validation
 │   │   └── logging.py                   # Logging configuration
-│   └── tests/                           # 20 test files (126 tests)
+│   └── tests/                           # 21 test files (150 tests)
 ├── frontend/
 │   └── src/
 │       ├── app/                         # App shell, router
@@ -565,7 +587,8 @@ flowchart TB
     SYN --> PRI[Priority Queue]
 
     BLOCKS --> EXEC_LAYER["Execution Layer V2\n(async parallel)"]
-    EXEC_LAYER --> SUM["Structured Summary\n(1 LLM call)"]
+    EXEC_LAYER --> ROUTER2["ProviderRouter\n(round-robin across keys)"]
+    ROUTER2 --> SUM["Structured Summary\n(1 LLM call)"]
     SUM --> P1["Pass 1: Segment Annotation\n(block-based parallel batches)"]
     P1 --> P2["Pass 2: Story Reasoning\n(block-based parallel)"]
 
@@ -595,6 +618,7 @@ flowchart TB
     style EMB fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
     style BLOCKS fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
     style EXEC_LAYER fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
+    style ROUTER2 fill:#06b6d4,color:#fff,stroke:#0891b2,stroke-width:2px
     style SUM fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
     style P1 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
     style P2 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
@@ -1015,6 +1039,48 @@ flowchart TD
 | 2 (Fallback) | Gemini | gemini-2.0-flash | API key missing |
 | 3 (Rule-based) | Local | Heuristic | No API keys configured |
 
+#### ProviderRouter (Multi-Key Load Balancing)
+
+When multiple Groq API keys are configured, `ProviderRouter` distributes requests using thread-safe round-robin:
+
+```mermaid
+flowchart TB
+    REQ["LLM Request"] --> PS["ProviderSession\n(rate limiter)"]
+    PS --> ROUTER["ProviderRouter\n(thread-safe round-robin)"]
+    
+    subgraph Buckets ["Per-Instance Token Buckets"]
+        ROUTER --> B1["TokenBucket\ngroq-1\n5,500 tok/60s"]
+        ROUTER --> B2["TokenBucket\ngroq-2\n5,500 tok/60s"]
+        ROUTER --> B3["TokenBucket\ngroq-3\n5,500 tok/60s"]
+        ROUTER --> B4["TokenBucket\ngemini\n30,000 tok/60s"]
+    end
+    
+    B1 --> G1["Groq API\nwhisper + Llama"]
+    B2 --> G1
+    B3 --> G1
+    B4 --> G2["Gemini API\nflash"]
+
+    style ROUTER fill:#06b6d4,color:#fff,stroke:#0891b2,stroke-width:2px
+    style B1 fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:1px
+    style B2 fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:1px
+    style B3 fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:1px
+    style B4 fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:1px
+```
+
+**Configuration** — each key on its own line in `.env`:
+```bash
+GROQ_API_KEY_1=gsk_abc123...
+GROQ_API_KEY_2=gsk_def456...
+GROQ_API_KEY_3=gsk_ghi789...
+GEMINI_API_KEY=AIza...
+```
+
+**Behavior:**
+- Cycles: `groq-1 → groq-2 → groq-3 → gemini → groq-1 → ...`
+- Each provider gets its own `TokenBucket` (per-instance, not global)
+- Implements `LLMProvider` interface — zero changes needed to `ExecutionEngine`, `ProviderSession`, or any service
+- Thread-safe via `threading.Lock`
+
 > All LLM calls go through `ProviderSession` which handles rate limiting, token estimation, and middleware. The `ExecutionEngine` classifies errors as retryable or non-retryable using `_is_retryable()`.
 
 ---
@@ -1160,8 +1226,10 @@ TRIMORA_CORS_ORIGINS=*
 VITE_API_BASE_URL=http://localhost:8000
 
 # API Keys (at least one recommended)
-GROQ_API_KEY=
-GEMINI_API_KEY=
+GROQ_API_KEY_1=gsk_...        # Primary Groq key
+GROQ_API_KEY_2=gsk_...        # Additional Groq keys (optional)
+GROQ_API_KEY_3=gsk_...
+GEMINI_API_KEY=AIza...        # Fallback provider
 ```
 
 ### Runtime Configuration
@@ -1277,15 +1345,19 @@ npm run dev
 
 ### API Key Setup
 
-1. **Groq** (recommended): Get a free API key at [console.groq.com](https://console.groq.com)
+1. **Groq** (recommended): Get free API keys at [console.groq.com](https://console.groq.com)
 2. **Gemini** (fallback): Get a free API key at [aistudio.google.com](https://aistudio.google.com)
 
-Set at least one in your `.env` file:
+Set at least one in your `.env` file. For load balancing, add multiple Groq keys:
 
 ```bash
-GROQ_API_KEY=gsk_...
-GEMINI_API_KEY=AIza...
+GROQ_API_KEY_1=gsk_...        # Primary
+GROQ_API_KEY_2=gsk_...        # Optional: enables round-robin
+GROQ_API_KEY_3=gsk_...        # Optional: more distribution
+GEMINI_API_KEY=AIza...        # Fallback
 ```
+
+> `ProviderRouter` automatically detects multiple keys and round-robins across them. Each key gets its own rate limiter (5,500 tokens/60s for Groq, 30,000 tokens/60s for Gemini).
 
 ---
 
@@ -1401,11 +1473,11 @@ python -m pytest backend/tests/integration/ -v
 python -m pytest backend/tests/ --cov=backend --cov-report=term-missing
 ```
 
-**Test count:** 126 tests across 20 test files
+**Test count:** 150 tests across 21 test files
 
 | Category | Files | Tests |
 |---|---|---|
-| Unit tests | 17 | ~120 |
+| Unit tests | 18 | ~144 |
 | Integration tests | 3 | ~6 |
 
 ---
