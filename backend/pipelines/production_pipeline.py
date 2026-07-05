@@ -226,7 +226,7 @@ class ProductionPipeline:
             timing.story_reasoning_ms = (perf_counter() - t0) * 1000
 
             # Step 3: Priority Queue (Scheduling Only — never mutates timeline order)
-            priority_queue = self.priority_ranker.rank_blocks(blocks)
+            priority_queue = self.priority_ranker.rank(blocks)
             self.job_store.file_store.write_json(
                 semantic_dir / "priority_queue.json",
                 priority_queue.model_dump(mode="json"),
