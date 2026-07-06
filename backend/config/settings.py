@@ -52,7 +52,7 @@ class Settings:
     segment_max_usage: int = 3
     # Local transcription (faster-whisper / whisperx)
     whisper_model_size: str = "auto"
-    whisper_device: str = "auto"
+    whisper_device: str = "cuda"
     whisper_compute_type: str = "auto"
     whisper_beam_size: int = 5
     whisper_language: str | None = None
