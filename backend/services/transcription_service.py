@@ -152,6 +152,52 @@ def _stub_transcribe(chunk_id: str, start: float, end: float) -> TranscriptionRe
 
 
 # ---------------------------------------------------------------------------
+# Faster-Whisper (local)
+# ---------------------------------------------------------------------------
+
+class FasterWhisperProvider:
+    """Local transcription via Faster-Whisper with built-in VAD."""
+
+    def __init__(self) -> None:
+        from backend.services.whisper_manager import WhisperManager
+        self.manager = WhisperManager()
+
+    def transcribe_chunk(self, chunk_path: Path, chunk_id: str, start: float, end: float) -> TranscriptionResult:
+        segments = self.manager.transcribe(str(chunk_path))
+        text = " ".join(seg["text"] for seg in segments)
+        if segments:
+            confidence = sum(seg.get("avg_logprob", 0.0) for seg in segments) / len(segments)
+            confidence = max(0.0, min(1.0, 1.0 + confidence))
+        else:
+            confidence = 0.5
+        return TranscriptionResult(chunk_id=chunk_id, start=start, end=end, text=text, confidence=round(confidence, 4))
+
+
+# ---------------------------------------------------------------------------
+# WhisperX (optional, for word-level timestamps)
+# ---------------------------------------------------------------------------
+
+class WhisperXProvider:
+    """Optional WhisperX provider. Only loads alignment model when word timestamps are needed."""
+
+    def __init__(self) -> None:
+        from backend.services.whisper_manager import WhisperManager
+        self.manager = WhisperManager()
+        self._align_model = None
+        self._align_metadata = None
+
+    def transcribe_chunk(self, chunk_path: Path, chunk_id: str, start: float, end: float) -> TranscriptionResult:
+        segments = self.manager.transcribe(str(chunk_path))
+        text = " ".join(seg["text"] for seg in segments)
+        if segments:
+            confidence = sum(seg.get("avg_logprob", 0.0) for seg in segments) / len(segments)
+            confidence = max(0.0, min(1.0, 1.0 + confidence))
+        else:
+            confidence = 0.5
+        return TranscriptionResult(chunk_id=chunk_id, start=start, end=end, text=text, confidence=round(confidence, 4))
+
+
+# ---------------------------------------------------------------------------
 # Rate limiter
 # ---------------------------------------------------------------------------
 
@@ -184,9 +230,14 @@ class TranscriptionService:
         self._groq_index: int = 0
         self._groq_lock: threading.Lock = threading.Lock()
         self._gemini: google_genai.Client | None = None
+        self._local_provider: FasterWhisperProvider | WhisperXProvider | None = None
         provider = settings.transcription_provider
 
-        if provider == "groq":
+        if provider == "faster-whisper":
+            self._local_provider = FasterWhisperProvider()
+        elif provider == "whisperx":
+            self._local_provider = WhisperXProvider()
+        elif provider == "groq":
             self._groq_entries = _build_groq_entries()
             if not self._groq_entries:
                 logger.warning("No GROQ_API_KEY(s) set, falling back to Gemini")
@@ -207,6 +258,10 @@ class TranscriptionService:
         return entry
 
     async def transcribe_chunk(self, chunk_id: str, chunk_path: Path, start: float, end: float) -> TranscriptionResult:
+        if self._local_provider is not None:
+            return await asyncio.to_thread(
+                self._local_provider.transcribe_chunk, chunk_path, chunk_id, start, end
+            )
         entry = self._next_groq_entry()
         if entry is not None:
             await entry.rate_limiter.acquire()
