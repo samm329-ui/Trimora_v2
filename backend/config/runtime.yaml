@@ -22,7 +22,7 @@ job:
 
 whisper:
   model_size: "auto"
-  device: "auto"
+  device: "cuda"
   compute_type: "auto"
   beam_size: 5
   language: null
