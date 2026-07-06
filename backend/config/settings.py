@@ -50,6 +50,14 @@ class Settings:
     duplicate_segment_overlap: float = 0.95
     blueprint_short_max: float = 90.0
     segment_max_usage: int = 3
+    # Local transcription (faster-whisper / whisperx)
+    whisper_model_size: str = "auto"
+    whisper_device: str = "auto"
+    whisper_compute_type: str = "auto"
+    whisper_beam_size: int = 5
+    whisper_language: str | None = None
+    whisper_vad_filter: bool = True
+    whisper_vad_min_silence_ms: int = 500
     # Embedding clustering
     embedding_min_window: int = 3
     embedding_target_window: int = 5
@@ -116,6 +124,18 @@ class Settings:
         base.duplicate_segment_overlap = float(semantic.get("duplicate_segment_overlap", base.duplicate_segment_overlap))
         base.blueprint_short_max = float(semantic.get("blueprint_short_max", base.blueprint_short_max))
         base.segment_max_usage = int(semantic.get("segment_max_usage", base.segment_max_usage))
+
+        # Whisper settings
+        whisper = data.get("whisper", {})
+        base.whisper_model_size = str(whisper.get("model_size", os.getenv("WHISPER_MODEL_SIZE", base.whisper_model_size)))
+        base.whisper_device = str(whisper.get("device", os.getenv("WHISPER_DEVICE", base.whisper_device)))
+        base.whisper_compute_type = str(whisper.get("compute_type", os.getenv("WHISPER_COMPUTE_TYPE", base.whisper_compute_type)))
+        base.whisper_beam_size = int(whisper.get("beam_size", int(os.getenv("WHISPER_BEAM_SIZE", str(base.whisper_beam_size)))))
+        lang = whisper.get("language", os.getenv("WHISPER_LANGUAGE", base.whisper_language))
+        base.whisper_language = None if lang is None or lang == "null" or lang == "None" else str(lang)
+        vad_raw = whisper.get("vad_filter", os.getenv("WHISPER_VAD_FILTER", str(base.whisper_vad_filter)))
+        base.whisper_vad_filter = str(vad_raw).lower() in ("true", "1", "yes")
+        base.whisper_vad_min_silence_ms = int(whisper.get("vad_min_silence_ms", int(os.getenv("WHISPER_VAD_MIN_SILENCE_MS", str(base.whisper_vad_min_silence_ms)))))
 
         # Embedding clustering settings
         base.embedding_min_window = int(embedding.get("min_window", base.embedding_min_window))
