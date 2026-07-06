@@ -16,9 +16,18 @@ storage:
 
 job:
   retry_count: 3
-  transcription_provider: "groq"
+  transcription_provider: "faster-whisper"
   transcription_timeout_seconds: 600
   export_timeout_seconds: 600
+
+whisper:
+  model_size: "auto"
+  device: "auto"
+  compute_type: "auto"
+  beam_size: 5
+  language: null
+  vad_filter: true
+  vad_min_silence_ms: 500
 
 thresholds:
   min_segment_seconds: 1.2
