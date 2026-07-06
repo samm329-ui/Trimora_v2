@@ -122,13 +122,31 @@ class ProductionPipeline:
             if cancelled:
                 return cancelled
 
+            # Log transcription provider info
+            if settings.transcription_provider in ("faster-whisper", "whisperx"):
+                try:
+                    from backend.services.whisper_manager import WhisperManager
+                    whisper_info = WhisperManager().info()
+                    logger.info(
+                        "Transcription: model=%s device=%s compute=%s workers=%d",
+                        whisper_info.model, whisper_info.device, whisper_info.compute_type, whisper_info.workers,
+                    )
+                except Exception as e:
+                    logger.warning("Could not get WhisperManager info: %s", e)
+
             self.job_store.set_status(job_id, JobStatus.chunking, 0.1)
             chunk_plan = self.audio_service.plan_chunks(duration, speech_density=0.55)
             chunk_ranges = self._build_ranges(duration, chunk_plan.chunk_seconds, chunk_plan.overlap_seconds)
             await self._publish_event(job_id, "chunk_plan_ready", {"chunks": len(chunk_ranges), "workers": chunk_plan.worker_limit})
 
             self.job_store.set_status(job_id, JobStatus.transcribing, 0.2)
-            pool = self.scheduler.build_pool(chunk_plan.worker_limit)
+            if settings.transcription_provider in ("faster-whisper", "whisperx"):
+                from backend.services.whisper_manager import WhisperManager
+                worker_count = WhisperManager().worker_count
+                logger.info("Local transcription: %d worker(s)", worker_count)
+            else:
+                worker_count = chunk_plan.worker_limit
+            pool = self.scheduler.build_pool(worker_count)
 
             async def transcribe_one(item: tuple[int, float, float]) -> TranscriptChunk:
                 index, start, end = item
