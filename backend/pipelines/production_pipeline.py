@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import os
 from pathlib import Path
 from time import perf_counter
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +48,18 @@ from backend.storage.file_store import FileStore
 from backend.storage.job_store import JobStore
 from backend.utils.text_utils import split_sentences
 from backend.workers.scheduler import Scheduler
+
+
+@dataclass
+class ChunkPerformance:
+    """Telemetry for a single chunk's transcription performance."""
+    chunk_id: str
+    audio_duration_s: float
+    split_ms: float
+    inference_ms: float
+    assembly_ms: float
+    total_ms: float
+    rtf: float
 
 
 class ProductionPipeline:
@@ -122,14 +136,20 @@ class ProductionPipeline:
             if cancelled:
                 return cancelled
 
-            # Log transcription provider info
+            # Log transcription configuration
             if settings.transcription_provider in ("faster-whisper", "whisperx"):
                 try:
                     from backend.services.whisper_manager import WhisperManager
-                    whisper_info = WhisperManager().info()
+                    wm = WhisperManager()
+                    whisper_info = wm.info()
                     logger.info(
-                        "Transcription: model=%s device=%s compute=%s workers=%d",
-                        whisper_info.model, whisper_info.device, whisper_info.compute_type, whisper_info.workers,
+                        "Transcription config: provider=%s model=%s device=%s compute=%s workers=%d beam_size=%d vad=%s language=%s cpu_cores=%d",
+                        whisper_info.provider, whisper_info.model, whisper_info.device,
+                        whisper_info.compute_type, whisper_info.workers,
+                        settings.whisper_beam_size,
+                        "enabled" if settings.whisper_vad_filter else "disabled",
+                        settings.whisper_language or "auto",
+                        whisper_info.cpu_cores,
                     )
                 except Exception as e:
                     logger.warning("Could not get WhisperManager info: %s", e)
@@ -148,26 +168,78 @@ class ProductionPipeline:
                 worker_count = chunk_plan.worker_limit
             pool = self.scheduler.build_pool(worker_count)
 
+            chunk_perf_stats: list[ChunkPerformance] = []
+
             async def transcribe_one(item: tuple[int, float, float]) -> TranscriptChunk:
                 index, start, end = item
                 chunk_id = f"{job_id}_chunk_{index}"
                 chunk_path = chunks_dir / f"chunk_{index:03d}.opus"
+                audio_duration = end - start
 
+                # Stage 1: Split audio
+                t_split = perf_counter()
                 await asyncio.to_thread(
                     self.audio_service.split_chunk,
                     audio_path, chunk_path, start, end, settings.chunk_bitrate,
                 )
+                split_ms = (perf_counter() - t_split) * 1000
 
-                result = await self.transcription_service.transcribe_chunk(chunk_id, chunk_path, start, end)
-                return TranscriptChunk(
+                # Stage 2: Whisper inference
+                t_infer = perf_counter()
+                result = await self.transcription_service.transcribe_chunk(
+                    chunk_id, chunk_path, start, end, job_id=job_id
+                )
+                infer_ms = (perf_counter() - t_infer) * 1000
+
+                # Stage 3: Transcript assembly
+                t_assembly = perf_counter()
+                chunk = TranscriptChunk(
                     chunk_id=result.chunk_id,
                     start=result.start,
                     end=result.end,
                     text=result.text,
                     confidence=result.confidence,
                 )
+                assembly_ms = (perf_counter() - t_assembly) * 1000
+
+                # Compute RTF
+                total_ms = split_ms + infer_ms + assembly_ms
+                rtf = total_ms / 1000 / audio_duration if audio_duration > 0 else 0.0
+
+                perf_stat = ChunkPerformance(
+                    chunk_id=chunk_id,
+                    audio_duration_s=audio_duration,
+                    split_ms=split_ms,
+                    inference_ms=infer_ms,
+                    assembly_ms=assembly_ms,
+                    total_ms=total_ms,
+                    rtf=rtf,
+                )
+                chunk_perf_stats.append(perf_stat)
+
+                logger.info(
+                    "Chunk %s [%.1fs]: split=%.0fms infer=%.0fms assembly=%.0fms total=%.0fms RTF=%.2f",
+                    chunk_id, audio_duration, split_ms, infer_ms, assembly_ms, total_ms, rtf
+                )
+                return chunk
 
             transcript_chunks = await pool.run(chunk_ranges, transcribe_one)
+
+            # Log RTF summary
+            if chunk_perf_stats:
+                rtf_values = [s.rtf for s in chunk_perf_stats]
+                avg_rtf = sum(rtf_values) / len(rtf_values)
+                peak_rtf = max(rtf_values)
+                avg_duration = sum(s.audio_duration_s for s in chunk_perf_stats) / len(chunk_perf_stats)
+                total_infer_ms = sum(s.inference_ms for s in chunk_perf_stats)
+                total_audio_s = sum(s.audio_duration_s for s in chunk_perf_stats)
+
+                logger.info(
+                    "Transcription summary: chunks=%d avg_rtf=%.2f peak_rtf=%.2f avg_chunk_duration=%.1fs total_inference=%.1fs total_audio=%.1fs",
+                    len(chunk_perf_stats), avg_rtf, peak_rtf, avg_duration,
+                    total_infer_ms / 1000, total_audio_s,
+                )
+
             await self._publish_event(job_id, "transcription_completed", {"chunk_count": len(transcript_chunks)})
             cancelled = self._check_cancelled(job_id)
             if cancelled:
@@ -521,6 +593,14 @@ class ProductionPipeline:
                 error=f"Pipeline failed: {e}",
             )
         finally:
+            # Clear cached language for this job
+            if settings.transcription_provider in ("faster-whisper", "whisperx"):
+                try:
+                    from backend.services.whisper_manager import WhisperManager
+                    WhisperManager().clear_job_language(job_id)
+                except Exception:
+                    pass
+
             if not settings.keep_chunks:
                 import shutil
                 shutil.rmtree(chunks_dir, ignore_errors=True)
