@@ -162,8 +162,8 @@ class FasterWhisperProvider:
         from backend.services.whisper_manager import WhisperManager
         self.manager = WhisperManager()
 
-    def transcribe_chunk(self, chunk_path: Path, chunk_id: str, start: float, end: float) -> TranscriptionResult:
-        segments = self.manager.transcribe(str(chunk_path))
+    def transcribe_chunk(self, chunk_path: Path, chunk_id: str, start: float, end: float, job_id: str | None = None) -> TranscriptionResult:
+        segments = self.manager.transcribe(str(chunk_path), job_id=job_id)
         text = " ".join(seg["text"] for seg in segments)
         if segments:
             confidence = sum(seg.get("avg_logprob", 0.0) for seg in segments) / len(segments)
@@ -186,8 +186,8 @@ class WhisperXProvider:
         self._align_model = None
         self._align_metadata = None
 
-    def transcribe_chunk(self, chunk_path: Path, chunk_id: str, start: float, end: float) -> TranscriptionResult:
-        segments = self.manager.transcribe(str(chunk_path))
+    def transcribe_chunk(self, chunk_path: Path, chunk_id: str, start: float, end: float, job_id: str | None = None) -> TranscriptionResult:
+        segments = self.manager.transcribe(str(chunk_path), job_id=job_id)
         text = " ".join(seg["text"] for seg in segments)
         if segments:
             confidence = sum(seg.get("avg_logprob", 0.0) for seg in segments) / len(segments)
@@ -257,10 +257,10 @@ class TranscriptionService:
             self._groq_index = (self._groq_index + 1) % len(self._groq_entries)
         return entry
 
-    async def transcribe_chunk(self, chunk_id: str, chunk_path: Path, start: float, end: float) -> TranscriptionResult:
+    async def transcribe_chunk(self, chunk_id: str, chunk_path: Path, start: float, end: float, job_id: str | None = None) -> TranscriptionResult:
         if self._local_provider is not None:
             return await asyncio.to_thread(
-                self._local_provider.transcribe_chunk, chunk_path, chunk_id, start, end
+                self._local_provider.transcribe_chunk, chunk_path, chunk_id, start, end, job_id
             )
         entry = self._next_groq_entry()
         if entry is not None:
