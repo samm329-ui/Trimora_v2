@@ -24,6 +24,7 @@
 - [Production Pipeline](#production-pipeline)
 - [Job Lifecycle](#job-lifecycle)
 - [API Reference](#api-reference)
+- [Transcription Performance Monitoring](#transcription-performance-monitoring)
 - [Ranking Engine](#ranking-engine)
 - [Frontend](#frontend)
 - [Configuration](#configuration)
@@ -39,14 +40,23 @@
 
 Trimora takes a long video (podcast, lecture, interview) and automatically extracts the best short-form clips. The pipeline processes audio independently of video, using parallel transcription, embedding-based topic clustering, LLM-driven semantic enrichment, multi-signal feature extraction, and a multi-stage ranking engine to identify the most engaging moments.
 
-**Processing time estimates** (with rate-limited transcription):
+**Processing time estimates** (with Faster-Whisper GPU transcription):
+
+| Video Length | Chunks | Transcription | Semantic | Total |
+|---|---|---|---|---|
+| 8 minutes | 10 | ~10-20s | ~5s | ~25-40s |
+| 30 minutes | 40 | ~40-80s | ~8s | ~60-100s |
+| 1 hour | 80 | ~80-160s | ~15s | ~2-4 min |
+
+> **Note:** With GTX 1650 (4GB VRAM) and large-v3 model, expect RTF ~0.1-0.3 (3-10x faster than real-time). See [Transcription Performance Monitoring](#transcription-performance-monitoring) for details.
+
+**Processing time estimates** (with cloud transcription - Groq/Gemini):
 
 | Video Length | Chunks | Transcription | Semantic | Total |
 |---|---|---|---|---|
 | 30 minutes | 40 | ~160s | ~8s | ~3 min |
 | 1 hour | 40 | ~160s | ~8s | ~3 min |
 | 3 hours | 120 | ~480s | ~20s | ~9 min |
-| 4 hours | 160 | ~640s | ~25s | ~12 min |
 
 > **Execution Layer V2** reduces semantic processing from ~6 min to ~2-3 min (~40-50% improvement) through async parallel execution, provider-agnostic request handling, and concurrent worker pools. **ProviderRouter** distributes load across multiple Groq API keys for improved throughput.
 
@@ -57,7 +67,10 @@ Trimora takes a long video (podcast, lecture, interview) and automatically extra
 | Feature | Description |
 |---|---|
 | Audio-First Processing | Extract audio once, process independently of video |
-| Parallel Transcription | Rate-limited concurrent processing (Groq/Gemini) |
+| Local Transcription | Faster-Whisper with auto model selection (tiny→large-v3) |
+| Cloud Transcription | Groq/Gemini as fallback or primary provider |
+| Per-Job Language Caching | Language detected once, reused across all chunks |
+| Parallel Transcription | Rate-limited concurrent processing |
 | Adaptive Chunking | Dynamic chunk sizes based on video duration |
 | Execution Layer V2 | Provider-agnostic async engine with priority queuing |
 | ProviderRouter | Thread-safe round-robin across multiple API keys/providers |
@@ -70,6 +83,7 @@ Trimora takes a long video (podcast, lecture, interview) and automatically extra
 | Multi-Stage Ranking | Semantic deduplication with MMR optimization |
 | Checkpointing | Pass 1 and Pass 2 resume from last completed batch |
 | FFmpeg Rendering | Direct MP4 clip export |
+| Performance Monitoring | Per-chunk RTF logging and transcription analytics |
 | Learning Pipeline | Continuous improvement from analytics |
 | Dark Theme UI | Modern React frontend with dark mode |
 
@@ -82,7 +96,7 @@ Trimora takes a long video (podcast, lecture, interview) and automatically extra
 | Backend | Python 3.11+, FastAPI, Pydantic v2 |
 | Frontend | React 18, TypeScript, Vite, Tailwind CSS |
 | Media Processing | FFmpeg, ffprobe |
-| Transcription | Groq (whisper-large-v3-turbo), Google Gemini (gemini-2.0-flash) |
+| Transcription | Faster-Whisper (local, CPU/GPU), Groq (cloud), Gemini (cloud) |
 | Embeddings | sentence-transformers (all-MiniLM-L6-v2), TF-IDF fallback |
 | LLM (Semantic) | Groq (Llama 3.1), Gemini — for Pass 1/2 semantic enrichment |
 | Concurrency | asyncio worker pools with semaphore |
@@ -116,7 +130,9 @@ flowchart LR
     subgraph Transcription ["Parallel Transcription"]
         SCHED --> WP["Worker Pool"]
         WP --> TRANS["Transcription"]
-        TRANS -->|whisper| GROQ["Groq API"]
+        TRANS -->|local| WM["WhisperManager\n(singleton)"]
+        WM --> FW["Faster-Whisper\n(CPU/GPU)"]
+        TRANS -->|cloud| GROQ["Groq API"]
         TRANS -->|fallback| GEMINI["Gemini API"]
         TRANS --> MERGE["Transcript Merge"]
     end
@@ -476,7 +492,8 @@ trimora/
 │   │   └── transcript.py               # TranscriptChunk
 │   ├── services/
 │   │   ├── audio_service.py             # FFmpeg audio extraction
-│   │   ├── transcription_service.py     # Groq/Gemini transcription
+│   │   ├── whisper_manager.py           # Faster-Whisper singleton (local transcription)
+│   │   ├── transcription_service.py     # Multi-provider transcription router
 │   │   ├── segmentation_service.py      # Atomic segment creation
 │   │   ├── feature_service.py           # Multi-signal feature extraction
 │   │   ├── graph_service.py             # Knowledge graph construction
@@ -989,27 +1006,41 @@ Trimora implements graceful degradation at multiple levels.
 
 ```mermaid
 flowchart TD
-    START["Transcription Request"] --> GROQ{"Groq API Key set?"}
+    START["Transcription Request"] --> PROVIDER{"Provider Setting"}
+    
+    PROVIDER -->|faster-whisper| WHISPER{"WhisperManager\n(model loaded?)"}
+    WHISPER -->|Yes| LOCAL["Local Inference\n(CPU/GPU)"]
+    WHISPER -->|No| LOAD["Load Model"]
+    LOAD --> LOCAL
+    
+    PROVIDER -->|groq| GROQ{"Groq API Key set?"}
     GROQ -->|Yes| GROQ_CLIENT["Groq Client"]
     GROQ -->|No| GEMINI{"Gemini API Key set?"}
+    
+    PROVIDER -->|gemini| GEMINI
+    
     GEMINI -->|Yes| GEMINI_CLIENT["Gemini Client"]
     GEMINI -->|No| STUB["Stub Transcription"]
-
+    
     GROQ_CLIENT --> RATE{"Rate Limiter"}
     RATE -->|Under limit| GROQ_CALL["Groq API Call"]
     RATE -->|Wait| RATE
-
+    
     GROQ_CALL -->|Success| RESULT["Transcription Result"]
     GROQ_CALL -->|429 Rate Limit| RETRY["Auto-retry with backoff"]
     RETRY --> RATE
-
+    
     GEMINI_CLIENT --> GEMINI_CALL["Gemini API Call"]
     GEMINI_CALL -->|Success| RESULT
     GEMINI_CALL -->|Error| STUB
-
+    
+    LOCAL --> RESULT
     STUB --> RESULT
-
+    
     style START fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
+    style PROVIDER fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
+    style WHISPER fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
+    style LOCAL fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
     style GROQ fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
     style GEMINI fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
     style STUB fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
@@ -1020,9 +1051,10 @@ flowchart TD
 
 | Priority | Provider | Model | Fallback Trigger |
 |---|---|---|---|
-| 1 (Primary) | Groq | whisper-large-v3-turbo | API key missing, rate limit exceeded |
-| 2 (Fallback) | Gemini | gemini-2.0-flash | API key missing, API error |
-| 3 (Stub) | Local | Generated text | No API keys configured |
+| 1 (Primary) | Faster-Whisper | tiny/base/small/medium/large-v3 (auto-selected) | Model not installed, GPU unavailable |
+| 2 (Fallback) | Groq | whisper-large-v3-turbo | API key missing, rate limit exceeded |
+| 3 (Fallback) | Gemini | gemini-2.0-flash | API key missing, API error |
+| 4 (Stub) | Local | Generated text | No API keys configured |
 
 ### Embedding Fallback
 
@@ -1082,6 +1114,64 @@ GEMINI_API_KEY=AIza...
 - Thread-safe via `threading.Lock`
 
 > All LLM calls go through `ProviderSession` which handles rate limiting, token estimation, and middleware. The `ExecutionEngine` classifies errors as retryable or non-retryable using `_is_retryable()`.
+
+---
+
+## Transcription Performance Monitoring
+
+Trimora includes built-in performance monitoring for transcription with per-chunk timing and RTF (Real-Time Factor) logging.
+
+### What Gets Logged
+
+At job start:
+```
+Transcription config: provider=faster-whisper model=small device=cpu compute=int8 workers=1 beam_size=5 vad=enabled language=auto cpu_cores=8
+```
+
+After first chunk:
+```
+Language detected: hi (caching for job 317762d3-86e3-460e-8dac-bc54961e304e)
+```
+
+Per-chunk timing:
+```
+Chunk 317762d3_chunk_0 [44.0s]: split=555ms infer=134948ms assembly=0ms total=135503ms RTF=3.08
+```
+
+Job summary:
+```
+Transcription summary: chunks=5 avg_rtf=0.91 peak_rtf=1.08 avg_chunk_duration=44.0s total_inference=198.5s total_audio=220.0s
+```
+
+### RTF (Real-Time Factor)
+
+RTF measures transcription speed relative to audio duration:
+
+```
+RTF = processing_time / audio_duration
+```
+
+| RTF | Meaning |
+|---|---|
+| < 0.5 | Faster than real-time (excellent) |
+| 0.5 - 1.0 | Near real-time (good) |
+| 1.0 - 2.0 | Slower than real-time (acceptable for non-interactive) |
+| > 2.0 | Significantly slower (needs optimization) |
+
+### Per-Job Language Caching
+
+Language detection runs only on the first chunk of each job. Subsequent chunks reuse the cached language, eliminating redundant detection overhead.
+
+### Performance Targets
+
+| Stage | Target (GPU) | Target (CPU) |
+|---|---|---|
+| Audio extraction | < 5s | < 5s |
+| Transcription | 10-30s | 30-60s |
+| Semantic analysis | 10-20s | 10-20s |
+| Story generation | 5-10s | 5-10s |
+| Rendering | 10-20s | 10-20s |
+| **Total** | **< 60s** | **< 2 min** |
 
 ---
 
@@ -1216,8 +1306,16 @@ TRIMORA_MAX_CHUNK_SECONDS=120
 TRIMORA_OVERLAP_SECONDS=2
 
 # Transcription
-TRIMORA_TRANSCRIPTION_PROVIDER=stub
+TRIMORA_TRANSCRIPTION_PROVIDER=faster-whisper  # Options: faster-whisper, groq, gemini, stub
 TRIMORA_TRANSCRIPTION_TIMEOUT=600
+
+# Local Transcription (Faster-Whisper)
+WHISPER_MODEL_SIZE=auto         # Options: tiny, base, small, medium, large-v3, large-v3-turbo, auto
+WHISPER_DEVICE=cuda             # Options: cuda (GPU required), cpu
+WHISPER_COMPUTE_TYPE=auto       # Options: int8, float16, auto
+WHISPER_BEAM_SIZE=5             # Higher = better quality but slower
+WHISPER_VAD_FILTER=true         # Voice Activity Detection
+WHISPER_LANGUAGE=null           # Auto-detect, or set to "en", "hi", etc.
 
 # CORS
 TRIMORA_CORS_ORIGINS=*
@@ -1225,7 +1323,7 @@ TRIMORA_CORS_ORIGINS=*
 # Frontend
 VITE_API_BASE_URL=http://localhost:8000
 
-# API Keys (at least one recommended)
+# API Keys (required for cloud transcription)
 GROQ_API_KEY_1=gsk_...        # Primary Groq key
 GROQ_API_KEY_2=gsk_...        # Additional Groq keys (optional)
 GROQ_API_KEY_3=gsk_...
@@ -1256,9 +1354,18 @@ storage:
 
 job:
   retry_count: 3
-  transcription_provider: "groq"
+  transcription_provider: "faster-whisper"  # Options: faster-whisper, groq, gemini, stub
   transcription_timeout_seconds: 600
   export_timeout_seconds: 600
+
+whisper:
+  model_size: "auto"           # tiny, base, small, medium, large-v3, large-v3-turbo, auto
+  device: "cuda"               # cuda (GPU required), cpu
+  compute_type: "auto"         # int8, float16, auto
+  beam_size: 5                 # Higher = better quality but slower
+  language: null               # Auto-detect, or set language code
+  vad_filter: true             # Voice Activity Detection
+  vad_min_silence_ms: 500      # Minimum silence duration for VAD
 
 thresholds:
   min_segment_seconds: 1.2
@@ -1343,17 +1450,49 @@ cd ../frontend
 npm run dev
 ```
 
-### API Key Setup
+### Transcription Setup
 
-1. **Groq** (recommended): Get free API keys at [console.groq.com](https://console.groq.com)
-2. **Gemini** (fallback): Get a free API key at [aistudio.google.com](https://aistudio.google.com)
+Trimora supports both local and cloud transcription:
 
-Set at least one in your `.env` file. For load balancing, add multiple Groq keys:
+#### Local Transcription (Faster-Whisper)
+
+No API keys required. Faster-Whisper runs locally on your machine with GPU acceleration.
 
 ```bash
+# Install faster-whisper with CUDA support
+pip install faster-whisper
+
+# Configure in .env (GPU is default)
+TRIMORA_TRANSCRIPTION_PROVIDER=faster-whisper
+WHISPER_MODEL_SIZE=auto         # Auto-selects based on available VRAM
+WHISPER_DEVICE=cuda             # GPU required (fails if unavailable)
+WHISPER_COMPUTE_TYPE=auto       # float16 for GPU
+```
+
+**Model Selection (auto mode with 4GB VRAM):**
+
+| VRAM | Model | Compute Type | Expected RTF |
+|---|---|---|---|
+| >= 3GB | large-v3 | float16 | 0.1-0.3 |
+| >= 1.7GB | large-v3-turbo | float16 | 0.1-0.2 |
+| >= 1.6GB | medium | float16 | 0.1-0.2 |
+| >= 0.6GB | small | int8 | 0.2-0.4 |
+
+> **Note:** With a GTX 1650 (4GB VRAM), auto mode will select `large-v3` for best quality.
+
+#### Cloud Transcription (Groq/Gemini)
+
+Requires API keys. Faster than local on CPU, but requires internet connection.
+
+```bash
+# Get API keys
+# Groq: https://console.groq.com (free tier available)
+# Gemini: https://aistudio.google.com (free tier available)
+
+# Configure in .env
+TRIMORA_TRANSCRIPTION_PROVIDER=groq
 GROQ_API_KEY_1=gsk_...        # Primary
 GROQ_API_KEY_2=gsk_...        # Optional: enables round-robin
-GROQ_API_KEY_3=gsk_...        # Optional: more distribution
 GEMINI_API_KEY=AIza...        # Fallback
 ```
 
