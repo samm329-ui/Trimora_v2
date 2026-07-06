@@ -29,6 +29,7 @@ class WhisperRuntimeInfo:
     device: str
     compute_type: str
     workers: int
+    cpu_cores: int = 0
 
 
 class WhisperManager:
@@ -55,6 +56,8 @@ class WhisperManager:
         self._compute_type: str = "int8"
         self._workers: int = 1
         self._load_lock = threading.Lock()
+        self._job_language: dict[str, str] = {}
+        self._language_lock = threading.Lock()
         self._configure()
 
     def _configure(self) -> None:
@@ -71,6 +74,14 @@ class WhisperManager:
             self._device = "cuda"
         else:
             self._device = "cpu"
+
+        # If device is set to cuda but CUDA is not available, fail fast
+        if self._device == "cuda" and not (_HAVE_TORCH and torch.cuda.is_available()):
+            raise RuntimeError(
+                "CUDA requested but not available. "
+                "Ensure PyTorch with CUDA support is installed and a GPU is accessible. "
+                "Set WHISPER_DEVICE=cpu to use CPU mode instead."
+            )
 
         total_vram_gb = self._get_total_vram_gb()
 
@@ -189,20 +200,37 @@ class WhisperManager:
         audio_path: str,
         language: str | None = None,
         vad_filter: bool = True,
+        job_id: str | None = None,
     ) -> list[dict]:
         """Transcribe an audio file. Returns list of {"start", "end", "text"} dicts."""
         self._ensure_loaded()
         assert self._model is not None
 
+        from backend.config.settings import settings
+
+        effective_language = language
+        if effective_language is None and job_id and job_id in self._job_language:
+            effective_language = self._job_language[job_id]
+            logger.debug("Using cached language '%s' for job %s", effective_language, job_id)
+
         segments, info = self._model.transcribe(
             audio_path,
-            beam_size=5,
-            language=language,
+            beam_size=settings.whisper_beam_size,
+            language=effective_language,
             vad_filter=vad_filter,
             vad_parameters=dict(
-                min_silence_duration_ms=500, min_speech_duration_ms=250
+                min_silence_duration_ms=settings.whisper_vad_min_silence_ms,
+                min_speech_duration_ms=250,
             ),
         )
+
+        if info.language and job_id and job_id not in self._job_language:
+            with self._language_lock:
+                if job_id not in self._job_language:
+                    self._job_language[job_id] = info.language
+                    logger.info(
+                        "Language detected: %s (caching for job %s)", info.language, job_id
+                    )
 
         results = []
         for seg in segments:
@@ -218,6 +246,11 @@ class WhisperManager:
 
         return results
 
+    def clear_job_language(self, job_id: str) -> None:
+        """Clear cached language for a completed job."""
+        with self._language_lock:
+            self._job_language.pop(job_id, None)
+
     def info(self) -> WhisperRuntimeInfo:
         self._ensure_loaded()
         return WhisperRuntimeInfo(
@@ -226,6 +259,7 @@ class WhisperManager:
             device=self._device,
             compute_type=self._compute_type,
             workers=self._workers,
+            cpu_cores=os.cpu_count() or 1,
         )
 
     @property
