@@ -8,14 +8,14 @@ Python 3.11+ backend with FastAPI, Pydantic v2, and asyncio.
 - `api/routes/` - REST endpoints (process, status, preview, export)
 - `api/middleware/` - CORS, error handling, request logging
 - `pipelines/` - Production pipeline, orchestrator, analytics, learning, event bus
-- `services/` - 22 service modules covering all business logic
+- `services/` - 25 service modules covering all business logic
 - `models/` - 12 Pydantic model files (33 classes)
 - `ranking/` - 13-stage ranking engine with MMR optimization
 - `storage/` - File-based persistence (JSON)
 - `workers/` - Async worker pools with semaphore
 - `config/` - Settings, runtime.yaml, thresholds, semantic config
 - `utils/` - Text, audio, time utilities
-- `tests/` - 20 test files, 126 tests
+- `tests/` - 21 test files, 150 tests
 
 ## Semantic Enrichment Pipeline
 
@@ -33,7 +33,8 @@ Embedding-first architecture for LLM-efficient semantic enrichment:
 | Service | Purpose |
 |---|---|
 | AudioService | FFmpeg audio extraction and chunking |
-| TranscriptionService | Groq/Gemini parallel transcription |
+| WhisperManager | Faster-Whisper singleton (local transcription) |
+| TranscriptionService | Multi-provider transcription router (Faster-Whisper/Groq/Gemini) |
 | SegmentationService | Atomic segment creation |
 | FeatureService | Multi-signal feature extraction |
 | EmbeddingService | TF-IDF + sentence-transformers |
@@ -48,7 +49,7 @@ Embedding-first architecture for LLM-efficient semantic enrichment:
 | CoverageAnalyzer | Segment coverage analysis |
 | BlueprintGenerator | Story-to-blueprint conversion |
 | DuplicateGuard | Composite duplicate detection |
-| LLMProvider | Groq/Gemini/Rule-based LLM providers |
+| LLMProvider | Groq/Gemini/Rule-based LLM providers + ProviderRouter |
 | ScoringService | Candidate scoring |
 | RankingEngine | 13-stage ranking with MMR |
 | PreviewService | Preview manifest building |
