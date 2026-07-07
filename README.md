@@ -457,6 +457,8 @@ flowchart TB
         TB2["TokenBudget"]
         CB["CircuitBreaker"]
         EP["ExecutionPolicy"]
+        HC["Heartbeat"]
+        MT["SchedulerMetrics"]
     end
 
     subgraph Execution["Execution Layer"]
@@ -479,6 +481,8 @@ flowchart TB
     LS -->|"reserves tokens"| TB2
     LS -->|"checks health"| CB
     LS -->|"wraps retry"| EP
+    LS -->|"logs state every 30s"| HC
+    LS -->|"tracks workers and queue"| MT
     EP -->|"dispatches"| PA
     PA -->|"resolves prompt"| PS2
     PA -->|"reserves budget"| TB2
@@ -494,13 +498,15 @@ flowchart TB
     style SPL fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
     style PA fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
     style MR fill:#06b6d4,color:#fff,stroke:#0891b2,stroke-width:2px
+    style HC fill:#06b6d4,color:#fff,stroke:#0891b2,stroke-width:2px
+    style MT fill:#06b6d4,color:#fff,stroke:#0891b2,stroke-width:2px
 ```
 
 ### Key Components
 
 | Component | Location | Purpose |
 |---|---|---|
-| `LLMScheduler` | `backend/execution/scheduler.py` | Thin queue-and-dispatch; does NOT resolve prompts or build payloads |
+| `LLMScheduler` | `backend/execution/scheduler.py` | Thin queue-and-dispatch with sequence counter for stable ordering; never raises from `submit()` |
 | `TokenBudget` | `backend/execution/token_budget.py` | Reservation model with `reserve()` / `commit()` / `rollback()` using `asyncio.Condition` |
 | `CircuitBreaker` | `backend/execution/circuit_breaker.py` | CLOSED/OPEN/HALF_OPEN state machine; stops retrying when provider is exhausted |
 | `ExecutionPolicy` | `backend/execution/execution_policy.py` | Retry, backoff, timeout wrapping the circuit breaker |
@@ -519,19 +525,22 @@ flowchart TB
 stateDiagram-v2
     [*] --> CREATED
     CREATED --> QUEUED : submit
-    QUEUED --> EXECUTING : budget reserved
+    QUEUED --> WAITING_FOR_BUDGET : reserve tokens
+    WAITING_FOR_BUDGET --> EXECUTING : budget reserved
     EXECUTING --> COMPLETED : success
     EXECUTING --> RETRYING : retryable failure
-    RETRYING --> QUEUED : retry
+    RETRYING --> WAITING_FOR_BUDGET : retry
     EXECUTING --> FAILED : non-retryable or exhausted
+    QUEUED --> FAILED : enqueue error
+    COMPLETED --> [*]
+    FAILED --> [*]
 ```
 
 ### Token Budget Flow
 
 ```mermaid
 sequenceDiagram
-    participant PF as PromptFactory
-    participant PV as PayloadValidator
+    participant PL as ProductionPipeline
     participant LS as LLMScheduler
     participant TB as TokenBudget
     participant PA as ProviderAdapter
@@ -539,37 +548,38 @@ sequenceDiagram
     participant PR as ProviderRouter
     participant LLM as LLM Provider
 
-    PF->>PV : validate task
-    PV->>PV : check against ModelConfig
-    alt payload OK
-        PV-->>PF : ValidationResult OK
-    else payload oversized
-        PV->>PV : split into chunks
-        PV-->>PF : child tasks with SplitMetadata
+    PL->>LS : submit(LLMTask)
+    Note over LS : never raises - always returns handle
+    LS->>LS : enqueue with sequence counter
+    LS-->>PL : LLMExecutionHandle
+
+    loop Worker Loop
+        LS->>LS : dequeue task
+        LS->>PA : execute(task)
+        PA->>MR : get provider for model
+        MR-->>PA : provider and config
+        PA->>PA : resolve prompt from PromptStore
+        PA->>TB : reserve(estimated_tokens)
+
+        alt budget available
+            TB-->>PA : TokenReservation
+            PA->>PR : execute(prompt)
+            PR->>LLM : API call
+            LLM-->>PR : response
+            PR-->>PA : raw response
+            PA->>TB : commit(actual_tokens)
+            PA-->>LS : LLMExecutionResult
+            LS->>LS : set_result on handle
+        else budget exhausted
+            TB-->>PA : None after timeout
+            PA-->>LS : LLMExecutionResult failed
+            LS->>LS : set_result on handle
+        end
     end
 
-    PF->>LS : submit(LLMTask)
-    LS->>TB : reserve(estimated_tokens)
-    TB-->>LS : TokenReservation
-    LS->>PA : dispatch(task, reservation)
-    PA->>MR : get provider for model
-    MR-->>PA : provider + config
-    PA->>PA : resolve prompt from PromptStore
-
-    alt success
-        PA->>PR : execute(prompt)
-        PR->>LLM : API call
-        LLM-->>PR : response
-        PR-->>PA : raw response
-        PA->>TB : commit(actual_tokens)
-        PA-->>LS : LLMExecutionResult
-    else retryable failure
-        PA->>PR : execute(prompt)
-        PR->>LLM : API call
-        LLM-->>PR : error
-        PA->>TB : rollback(reservation)
-        PA->>PA : backoff and retry
-    end
+    PL->>PL : asyncio.gather on handles
+    PL->>LS : stop()
+    LS->>LS : cancel heartbeat and workers
 ```
 
 ### Model Configuration
@@ -609,6 +619,33 @@ scheduler:
 | Max output tokens | 2,000 | Model max output |
 | Circuit breaker threshold | 3 failures | Opens for 60s after 3 consecutive failures |
 | Max retries | 3 | With exponential backoff (2s base, 30s max) |
+
+### Scheduler Resilience
+
+The scheduler is designed to never permanently die from a single task failure.
+
+| Feature | Description |
+|---|---|
+| `submit()` never raises | Wraps entire body in try/except; always returns a handle |
+| Worker loop never exits | `except Exception` catches unexpected errors, logs them, and continues |
+| Sequence counter | `itertools.count()` provides deterministic FIFO ordering when priorities tie |
+| `task_done()` safety | `dequeued` flag ensures correct queue accounting even on `CancelledError` |
+| `handle.done()` guard | Prevents `InvalidStateError` when setting error on completed handles |
+| Scheduler outage detection | Logs `CRITICAL` if `active_workers == 0` with queued tasks |
+
+### Scheduler Metrics
+
+Emitted every 30 seconds via heartbeat and on shutdown.
+
+| Metric | Description |
+|---|---|
+| `active_workers` | Number of workers currently processing tasks |
+| `queue_depth_peak` | Maximum queue depth observed since startup |
+| `worker_exceptions` | Total uncaught exceptions across all workers |
+| `submitted` | Total tasks submitted to the queue |
+| `completed` | Total tasks that finished successfully |
+| `failed` | Total tasks that failed |
+| `total_tokens` | Total tokens consumed across all completed tasks |
 
 ---
 
@@ -747,8 +784,8 @@ trimora/
 │   │   └── storage_service.py
 │   ├── execution/                     # LLM Scheduler
 │   │   ├── __init__.py
-│   │   ├── models.py                  # LLMTask, TaskState, SplitMetadata, ExecutionRequest
-│   │   ├── scheduler.py               # LLMScheduler - queue and dispatch
+│   │   ├── models.py                  # LLMTask, TaskState, SplitMetadata, SchedulerMetrics
+│   │   ├── scheduler.py               # LLMScheduler - queue, dispatch, heartbeat, resilience
 │   │   ├── provider_adapter.py        # ProviderAdapter - model-aware execution
 │   │   ├── model_registry.py          # ModelRegistry - immutable model mapping
 │   │   ├── token_budget.py            # TokenBudget - reservation model
