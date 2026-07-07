@@ -48,7 +48,7 @@ Trimora takes a long video (podcast, lecture, interview) and automatically extra
 | 30 minutes | 40 | ~40-80s | ~8s | ~60-100s |
 | 1 hour | 80 | ~80-160s | ~15s | ~2-4 min |
 
-**Processing time estimates** (with cloud transcription — Groq/Gemini):
+**Processing time estimates** (with cloud transcription fallback — Groq/Gemini):
 
 | Video Length | Chunks | Transcription | Semantic | Total |
 |---|---|---|---|---|
@@ -186,9 +186,9 @@ flowchart TB
 |---|---|
 | Audio-First Processing | Extract audio once, process independently of video |
 | Local Transcription | Faster-Whisper with auto model selection (tiny → large-v3) |
-| Cloud Transcription | Groq/Gemini as fallback or primary provider |
+| Cloud Transcription | Groq/Gemini as fallback option |
 | Per-Job Language Caching | Language detected once, reused across all chunks |
-| Parallel Transcription | Rate-limited concurrent processing |
+| Parallel Transcription | Local Faster-Whisper with rate-limited concurrent processing |
 | Adaptive Chunking | Dynamic chunk sizes based on video duration |
 | Execution Layer V2 | Provider-agnostic async engine with priority queuing |
 | ProviderRouter | Thread-safe round-robin across multiple API keys/providers |
@@ -259,7 +259,7 @@ flowchart LR
         CHUNK --> SCHED["Scheduler"]
     end
 
-    subgraph Transcription ["Parallel Transcription"]
+    subgraph Transcription ["Parallel Transcription (Local Whisper)"]
         SCHED --> WP["Worker Pool"]
         WP --> TRANS["Transcription"]
         TRANS -->|"local"| WM["WhisperManager"]
@@ -296,6 +296,99 @@ flowchart LR
     style ART fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
     style BUD fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
     style TRACE fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
+```
+
+### End-to-End Pipeline Flow
+
+Complete pipeline from video input to rendered MP4 clips:
+
+```mermaid
+flowchart TB
+    IN(["Video Input"]) --> FF{"FFmpeg\ninstalled?"}
+    FF -->|"No"| ERR1["Error:\nffmpeg not found"]
+    FF -->|"Yes"| AUDIO["Extract Audio\naudio.opus"]
+    AUDIO --> PLAN["Plan Chunks\nadaptive sizes"]
+    PLAN --> SPLIT["Split into\nchunk files"]
+    SPLIT --> WP["Worker Pool\nrate-limited"]
+
+    WP --> LOCAL{"Local Whisper\navailable?"}
+    LOCAL -->|"Yes"| WHISPER["Faster-Whisper\nGPU/CPU"]
+    LOCAL -->|"No"| CLOUD{"API keys\nconfigured?"}
+    CLOUD -->|"Groq"| GROQ["Groq API\nround-robin"]
+    CLOUD -->|"Gemini"| GEMIN["Gemini API"]
+    CLOUD -->|"None"| STUB["Stub\nTranscription"]
+
+    WHISPER --> MERGE["Merge\nTranscripts"]
+    GROQ --> MERGE
+    GEMIN --> MERGE
+    STUB --> MERGE
+
+    MERGE --> SEG["Atomic\nSegmentation"]
+    SEG --> FEAT["Feature\nExtraction"]
+    FEAT --> EMB["Embedding\nClustering"]
+    EMB --> BLOCKS["Topic\nBlocks"]
+    BLOCKS --> SYN["Block\nSynopses"]
+    SYN --> SUMMARY["Structured\nSummary\n1 LLM call"]
+
+    SUMMARY --> P1["Pass 1:\nSegment Annotation\nparallel batches"]
+    BLOCKS --> P1
+    P1 --> P2["Pass 2:\nStory Reasoning\nparallel blocks"]
+    BLOCKS --> P2
+    SUMMARY --> P2
+
+    P2 --> DETECT["Story\nDetection"]
+    DETECT --> REPAIR["Story\nRepair"]
+    REPAIR --> VALID["Story\nValidation"]
+    VALID --> BLUE["Blueprint\nGeneration"]
+
+    BLUE --> STORY["Story\nStrategy"]
+    BLUE --> HOOK["Hook\nStrategy"]
+    BLUE --> REVEAL["Reveal\nStrategy"]
+    BLUE --> REACT["Reaction\nStrategy"]
+    BLUE --> OPINION["Opinion\nStrategy"]
+
+    STORY --> DEDUP["Candidate\nDeduplication"]
+    HOOK --> DEDUP
+    REVEAL --> DEDUP
+    REACT --> DEDUP
+    OPINION --> DEDUP
+
+    DEDUP --> OBJ["Objective\nScoring\n10 objectives\nDAG order"]
+    OBJ --> NARR["Narrative\nOptimization"]
+    NARR --> PORT["Portfolio\nOptimization\nMMR + diversity"]
+    PORT --> EVAL["Evaluation\nRecording"]
+
+    EVAL --> RANK["Multi-Stage\nRanking\n11 stages"]
+    RANK --> PREV["Preview\nManifest"]
+    PREV --> RENDER["FFmpeg\nRender MP4"]
+    RENDER --> DONE(["Complete"])
+
+    AUDIO -->|"Error"| ERR2["Error:\nextraction failed"]
+    WP -->|"Error"| ERR3["Error:\ntranscription failed"]
+
+    style IN fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
+    style DONE fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
+    style ERR1 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
+    style ERR2 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
+    style ERR3 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
+    style WHISPER fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
+    style GROQ fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
+    style GEMIN fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
+    style STUB fill:#6b7280,color:#fff,stroke:#4b5563,stroke-width:2px
+    style SUMMARY fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
+    style P1 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
+    style P2 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
+    style STORY fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
+    style HOOK fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
+    style REVEAL fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
+    style REACT fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
+    style OPINION fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
+    style DEDUP fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
+    style OBJ fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
+    style NARR fill:#06b6d4,color:#fff,stroke:#0891b2,stroke-width:2px
+    style PORT fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
+    style EVAL fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
+    style RANK fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
 ```
 
 ### Data Flow
@@ -620,7 +713,7 @@ flowchart TB
     EXT --> PLAN["Plan Chunks"]
     PLAN --> SPLIT["Split Audio Chunks"]
 
-    SPLIT --> TRANS["Parallel Transcription"]
+    SPLIT --> TRANS["Parallel Transcription\n(Faster-Whisper GPU/CPU)"]
     TRANS --> RATE{"Rate Limit"}
     RATE -->|"Groq"| GROQ_CALL["Groq API"]
     RATE -->|"Fallback"| GEMINI_CALL["Gemini API"]
@@ -684,7 +777,7 @@ flowchart TB
 | 2 | Audio Extraction | - | Extract audio as OGG/Opus via FFmpeg |
 | 3 | Chunk Planning | - | Calculate adaptive chunk sizes |
 | 4 | Chunk Splitting | - | Split audio into chunk files |
-| 5 | Transcription | - | Parallel transcription via Groq/Gemini |
+| 5 | Transcription | - | Parallel transcription via Faster-Whisper (local GPU/CPU) |
 | 6 | Merge | - | Deduplicate and merge transcripts |
 | 7 | Segmentation | - | Split into atomic segments |
 | 8 | Feature Extraction | - | Compute audio energy, text density, structure |
@@ -1350,7 +1443,8 @@ semantic:
 - Python 3.11+
 - Node.js 18+
 - FFmpeg (in PATH)
-- At least one transcription API key (Groq or Gemini)
+- Faster-Whisper (for local transcription — GPU recommended)
+- At least one API key (Groq or Gemini) only if using cloud transcription
 
 ### Quick Start (Windows)
 
