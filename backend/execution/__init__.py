@@ -14,6 +14,14 @@ from backend.execution.models import (
     STAGE_PASS1,
     STAGE_PASS2,
     STAGE_BLUEPRINT,
+    TaskState,
+    TaskPriority,
+    SplitMetadata,
+    LLMTask,
+    LLMExecutionResult,
+    LLMExecutionHandle,
+    SchedulerMetrics,
+    generate_task_id,
 )
 
 __all__ = [
@@ -32,4 +40,12 @@ __all__ = [
     "STAGE_PASS1",
     "STAGE_PASS2",
     "STAGE_BLUEPRINT",
+    "TaskState",
+    "TaskPriority",
+    "SplitMetadata",
+    "LLMTask",
+    "LLMExecutionResult",
+    "LLMExecutionHandle",
+    "SchedulerMetrics",
+    "generate_task_id",
 ]
