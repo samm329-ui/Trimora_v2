@@ -5,15 +5,15 @@ import dataclasses
 import logging
 import os
 from pathlib import Path
+import time
 from time import perf_counter
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
 from backend.config.settings import settings
-from backend.execution.engine import ExecutionEngine, PipelineExecutor
 from backend.execution.models import STAGE_SUMMARY, STAGE_PASS1, STAGE_PASS2, STAGE_BLUEPRINT
-from backend.execution.provider_session import ProviderSession
+from backend.execution.models import LLMTask, LLMExecutionResult, LLMExecutionHandle, TaskPriority, ExecutionRequest
 from backend.execution.repository import SegmentRepository
 from backend.models.clip import ClipCandidate
 from backend.models.job import JobRecord, JobStatus
@@ -34,6 +34,17 @@ from backend.services.segmentation_service import SegmentationService
 from backend.services.transcription_service import TranscriptionService
 from backend.services.llm_provider import create_provider
 from backend.services.semantic_service import SemanticService, SemanticEnrichmentError
+from backend.config.models import ModelConfig
+from backend.execution.model_registry import ModelRegistry
+from backend.execution.token_budget import TokenBudget
+from backend.execution.circuit_breaker import CircuitBreaker
+from backend.execution.execution_policy import ExecutionPolicy
+from backend.execution.provider_adapter import ProviderAdapter
+from backend.execution.scheduler import LLMScheduler
+from backend.services.token_counter import TokenCounter
+from backend.services.prompt_store import PromptStore
+from backend.services.payload_validator import PayloadValidator
+from backend.services.payload_splitter import PayloadSplitter
 from backend.services.story_reasoner import StoryReasoner, Pass2Error
 from backend.services.story_detector import StoryDetector
 from backend.services.story_validator import StoryValidator
@@ -84,10 +95,8 @@ class ChunkPerformance:
 
 
 class ProductionPipeline:
-    def __init__(self, job_store: JobStore, engine: ExecutionEngine | None = None):
+    def __init__(self, job_store: JobStore):
         self.job_store = job_store
-        self.engine = engine
-        self._executor: PipelineExecutor | None = None
         self.audio_service = AudioService()
         self.transcription_service = TranscriptionService()
         self.segmentation_service = SegmentationService()
@@ -122,6 +131,126 @@ class ProductionPipeline:
         self.narrative_optimizer = NarrativeOptimizer()
         self.portfolio_optimizer = PortfolioOptimizer(top_k=20)
         self.snapshot_service = None  # Initialized per job
+
+        # --- New LLM Scheduler Architecture ---
+        self._llm_scheduler: LLMScheduler | None = None
+        self._model_registry: ModelRegistry | None = None
+        self._prompt_store: PromptStore | None = None
+
+    def _init_llm_scheduler(self) -> LLMScheduler:
+        """Initialize the new LLM scheduler architecture (lazy, once per pipeline)."""
+        if self._llm_scheduler is not None:
+            return self._llm_scheduler
+
+        self._model_registry = ModelRegistry()
+        self._model_registry.register_provider("groq", self.llm_provider)
+        self._model_registry.register_model(
+            ModelConfig(
+                name="llama-3.1-8b-instant",
+                provider="groq",
+                context_window=128000,
+                max_input_tokens=126000,
+                max_output_tokens=2000,
+                rpm_limit=30,
+                tpm_limit=6000,
+                rpd_limit=14400,
+            ),
+            provider_name="groq",
+        )
+        self._model_registry.freeze()
+
+        model_config = self._model_registry.get_config("llama-3.1-8b-instant")
+        self._token_counter = TokenCounter(model_config)
+        token_budget = TokenBudget(model_config)
+        circuit_breaker = CircuitBreaker()
+
+        policy = ExecutionPolicy(
+            max_retries=3,
+            base_delay=2.0,
+            max_delay=30.0,
+            request_timeout=90.0,
+            circuit_breaker=circuit_breaker,
+        )
+
+        self._prompt_store = PromptStore(token_counter=self._token_counter, ttl_seconds=3600.0)
+        self._validator = PayloadValidator(self._token_counter)
+        self._splitter = PayloadSplitter(self._token_counter, self._prompt_store)
+
+        adapter = ProviderAdapter(
+            model_registry=self._model_registry,
+            execution_policy=policy,
+            token_budget=token_budget,
+            prompt_store=self._prompt_store,
+        )
+
+        self._llm_scheduler = LLMScheduler(provider_adapter=adapter)
+        logger.info("LLM Scheduler architecture initialized")
+        return self._llm_scheduler
+
+    def _requests_to_tasks(
+        self,
+        requests: list[ExecutionRequest],
+        repo: SegmentRepository,
+        job_id: str,
+        task_type: str,
+        expected_output_tokens: int,
+    ) -> list[LLMTask]:
+        """Convert old ExecutionRequests to LLMTasks, resolving prompts into PromptStore."""
+        tasks = []
+        for req in requests:
+            prompt = req.prompt_builder.build(req.prompt_context, repo)
+            prompt_tokens = self._token_counter.count(prompt)
+            prompt_id = self._prompt_store.store(prompt, job_id, task_type)
+
+            tasks.append(LLMTask(
+                task_id=req.request_id,
+                task_type=task_type,
+                priority=req.priority,
+                prompt_id=prompt_id,
+                prompt_tokens=prompt_tokens,
+                expected_output_tokens=expected_output_tokens,
+                model_name="llama-3.1-8b-instant",
+                job_id=job_id,
+                stage=req.stage.name,
+            ))
+        return tasks
+
+    async def _submit_and_collect(
+        self,
+        tasks: list[LLMTask],
+    ) -> list[LLMExecutionResult]:
+        """Validate, split if needed, submit tasks to LLMScheduler, and collect results."""
+        model_config = self._model_registry.get_config("llama-3.1-8b-instant")
+        executable_tasks = []
+
+        for task in tasks:
+            validation = self._validator.validate(task, model_config)
+            if not validation.valid:
+                logger.warning("Skipping invalid task %s: %s", task.task_id, validation.reason)
+                continue
+
+            split_rec = self._validator.get_split_recommendation(task, model_config)
+            if split_rec.needs_split:
+                executable_tasks.extend(
+                    self._splitter.split(task, split_rec.chunk_size, split_rec.strategy)
+                )
+            else:
+                executable_tasks.append(task)
+
+        if not executable_tasks:
+            return []
+
+        handles = [self._llm_scheduler.submit(t) for t in executable_tasks]
+        results = await asyncio.gather(*[h.result() for h in handles], return_exceptions=True)
+
+        final_results = []
+        for r in results:
+            if isinstance(r, Exception):
+                logger.error("Task failed with exception: %s", r)
+            elif isinstance(r, LLMExecutionResult):
+                final_results.append(r)
+
+        return final_results
 
     async def _publish_event(self, job_id: str, name: str, payload: dict) -> None:
         await self.event_bus.publish(PipelineEvent(job_id=job_id, name=name, payload=payload))
@@ -390,100 +519,111 @@ class ProductionPipeline:
             # Create repository (read-only, per job)
             repo = SegmentRepository(segments, blocks)
 
-            # Initialize executor if not yet done
-            if self._executor is None:
-                if self.engine is None:
-                    from backend.services.llm_provider import create_provider
-                    provider = create_provider(settings.semantic_provider)
-                    session = ProviderSession(provider, capacity=5500)
-                    self.engine = ExecutionEngine(session, max_concurrent=3)
-                    await self.engine.start(num_workers=3)
-                self._executor = PipelineExecutor(self.engine)
-                self._executor.register_stage(STAGE_SUMMARY)
-                self._executor.register_stage(STAGE_PASS1)
-                self._executor.register_stage(STAGE_PASS2)
-                self._executor.register_stage(STAGE_BLUEPRINT)
+            # Initialize LLM scheduler (new architecture)
+            llm_scheduler = self._init_llm_scheduler()
+            await llm_scheduler.start(num_workers=1)
 
-            # Submit summary request
-            summary_request = self.transcript_summarizer.create_request(
-                blocks, synopses_for_summary, job_id,
-            )
-            self._executor.submit_stage(STAGE_SUMMARY, [summary_request], repo)
-            summary_handles = await self._executor.wait_for_stage(STAGE_SUMMARY)
-            summary_result = await summary_handles[0].result()
-            summary_data = self.transcript_summarizer.parse_result(summary_result)
+            try:
+                # Submit summary request via new scheduler
+                summary_request = self.transcript_summarizer.create_request(
+                    blocks, synopses_for_summary, job_id,
+                )
+                summary_tasks = self._requests_to_tasks(
+                    [summary_request], repo, job_id, "summary", 500,
+                )
+                summary_results = await self._submit_and_collect(summary_tasks)
 
-            self.job_store.file_store.write_json(
-                semantic_dir / "summary.json",
-                summary_data,
-            )
-            summary_text = summary_data.get("main_topic", "")
-            timing.story_verification_ms = (perf_counter() - t0) * 1000
+                if summary_results:
+                    # Wrap LLMExecutionResult as compatible object for parse_result
+                    raw_response = summary_results[0].data
+                    summary_data = self.transcript_summarizer.parse_result(
+                        type("Result", (), {"raw_response": raw_response})()
+                    )
+                else:
+                    summary_data = {}
 
-            # Step 5: Pass 1 — Semantic Annotation (with block boundaries, summary context)
-            t0 = perf_counter()
-            self.job_store.set_status(job_id, JobStatus.analyzing, 0.72)
+                self.job_store.file_store.write_json(
+                    semantic_dir / "summary.json",
+                    summary_data,
+                )
+                summary_text = summary_data.get("main_topic", "")
+                timing.story_verification_ms = (perf_counter() - t0) * 1000
 
-            pass1_requests = self.semantic_service.create_requests(
-                blocks, segments, summary=summary_text, job_id=job_id,
-            )
-            self._executor.submit_stage(STAGE_PASS1, pass1_requests, repo)
-            pass1_handles = await self._executor.wait_for_stage(STAGE_PASS1)
+                # Step 5: Pass 1 — Semantic Annotation
+                t0 = perf_counter()
+                self.job_store.set_status(job_id, JobStatus.analyzing, 0.72)
 
-            all_annotations = []
-            all_pass1_raw = []
-            for handle in pass1_handles:
-                try:
-                    result = await handle.result()
-                    annotations_batch, _ = self.semantic_service.parse_result(result)
-                    all_annotations.extend(annotations_batch)
-                    all_pass1_raw.append(result.raw_response)
-                except Exception as e:
-                    logger.warning("Pass 1 handle failed: %s", e)
+                pass1_requests = self.semantic_service.create_requests(
+                    blocks, segments, summary=summary_text, job_id=job_id,
+                )
+                pass1_tasks = self._requests_to_tasks(
+                    pass1_requests, repo, job_id, "annotation", 800,
+                )
+                pass1_results = await self._submit_and_collect(pass1_tasks)
 
-            from backend.models.semantic import SegmentAnnotations
-            annotations = SegmentAnnotations(
-                job_id=job_id,
-                annotations=all_annotations,
-                relationships=[],
-            )
-            pass1_raw = {"pass1_raw": all_pass1_raw}
-            timing.semantic_annotation_ms = (perf_counter() - t0) * 1000
+                all_annotations = []
+                all_pass1_raw = []
+                for result in pass1_results:
+                    try:
+                        compatible = type("Result", (), {"raw_response": result.data})()
+                        annotations_batch, _ = self.semantic_service.parse_result(compatible)
+                        all_annotations.extend(annotations_batch)
+                        all_pass1_raw.append(result.data)
+                    except Exception as e:
+                        logger.warning("Pass 1 result parse failed: %s", e)
 
-            self.job_store.file_store.write_json(semantic_dir / "segment_annotations.json", annotations.model_dump(mode="json"))
-            self.job_store.file_store.write_json(semantic_dir / "pass1_raw.json", pass1_raw)
+                from backend.models.semantic import SegmentAnnotations
+                annotations = SegmentAnnotations(
+                    job_id=job_id,
+                    annotations=all_annotations,
+                    relationships=[],
+                )
+                pass1_raw = {"pass1_raw": all_pass1_raw}
+                timing.semantic_annotation_ms = (perf_counter() - t0) * 1000
 
-            # Update repo with annotations for Pass 2
-            repo = SegmentRepository(segments, blocks, annotations=annotations)
+                self.job_store.file_store.write_json(semantic_dir / "segment_annotations.json", annotations.model_dump(mode="json"))
+                self.job_store.file_store.write_json(semantic_dir / "pass1_raw.json", pass1_raw)
 
-            # Step 6: Pass 2 — Story Reasoning (block-based prompts, summary context)
-            t0 = perf_counter()
-            self.job_store.set_status(job_id, JobStatus.analyzing, 0.74)
+                # Update repo with annotations for Pass 2
+                repo = SegmentRepository(segments, blocks, annotations=annotations)
 
-            pass2_requests = self.story_reasoner.create_requests(
-                blocks, segments, annotations, summary_text, job_id,
-            )
-            self._executor.submit_stage(STAGE_PASS2, pass2_requests, repo)
-            pass2_handles = await self._executor.wait_for_stage(STAGE_PASS2)
+                # Step 6: Pass 2 — Story Reasoning
+                t0 = perf_counter()
+                self.job_store.set_status(job_id, JobStatus.analyzing, 0.74)
 
-            all_boundaries = []
-            all_pass2_raw = []
-            for handle in pass2_handles:
-                try:
-                    result = await handle.result()
-                    boundaries_batch = self.story_reasoner.parse_result(result)
-                    all_boundaries.extend(boundaries_batch)
-                    all_pass2_raw.append(result.raw_response)
-                except Exception as e:
-                    logger.warning("Pass 2 handle failed: %s", e)
+                pass2_requests = self.story_reasoner.create_requests(
+                    blocks, segments, annotations, summary_text, job_id,
+                )
+                pass2_tasks = self._requests_to_tasks(
+                    pass2_requests, repo, job_id, "reasoning", 600,
+                )
+                pass2_results = await self._submit_and_collect(pass2_tasks)
 
-            boundaries = all_boundaries
-            pass2_raw = {"pass2_raw": all_pass2_raw}
-            timing.story_reasoning_ms = (perf_counter() - t0) * 1000
+                all_boundaries = []
+                all_pass2_raw = []
+                for result in pass2_results:
+                    try:
+                        compatible = type("Result", (), {"raw_response": result.data})()
+                        boundaries_batch = self.story_reasoner.parse_result(compatible)
+                        all_boundaries.extend(boundaries_batch)
+                        all_pass2_raw.append(result.data)
+                    except Exception as e:
+                        logger.warning("Pass 2 result parse failed: %s", e)
 
-            annotations.llm_story_boundaries = boundaries
-            self.job_store.file_store.write_json(semantic_dir / "segment_annotations.json", annotations.model_dump(mode="json"))
-            self.job_store.file_store.write_json(semantic_dir / "pass2_raw.json", pass2_raw)
+                boundaries = all_boundaries
+                pass2_raw = {"pass2_raw": all_pass2_raw}
+                timing.story_reasoning_ms = (perf_counter() - t0) * 1000
+
+                annotations.llm_story_boundaries = boundaries
+                self.job_store.file_store.write_json(semantic_dir / "segment_annotations.json", annotations.model_dump(mode="json"))
+                self.job_store.file_store.write_json(semantic_dir / "pass2_raw.json", pass2_raw)
+
+                # Cleanup expired prompts
+                self._prompt_store.cleanup_expired()
+                logger.info("LLM Scheduler metrics: %s", llm_scheduler.metrics.to_dict())
+
+            finally:
+                await llm_scheduler.stop()
 
             # Story Candidate Formation
             self.job_store.set_status(job_id, JobStatus.analyzing, 0.75)
