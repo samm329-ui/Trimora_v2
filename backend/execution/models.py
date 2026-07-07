@@ -357,7 +357,7 @@ class LLMExecutionHandle:
 
     def __init__(self, task: LLMTask):
         self._task = task
-        self._future: asyncio.Future[LLMExecutionResult] = asyncio.get_event_loop().create_future()
+        self._future: asyncio.Future[LLMExecutionResult] = asyncio.get_running_loop().create_future()
 
     @property
     def task(self) -> LLMTask:
@@ -377,6 +377,9 @@ class LLMExecutionHandle:
     def set_error(self, error: Exception) -> None:
         if not self._future.done():
             self._future.set_exception(error)
+
+    def done(self) -> bool:
+        return self._future.done()
 
     @property
     def is_done(self) -> bool:
@@ -398,16 +401,23 @@ class SchedulerMetrics:
     total_tokens: int = 0
     queue_wait_total: float = 0.0
     execution_time_total: float = 0.0
+    active_workers: int = 0
+    worker_exceptions: int = 0
+    queue_depth_peak: int = 0
 
     def record_submission(self, task: LLMTask) -> None:
         self.submitted += 1
 
     def record_completion(self, task: LLMTask, result: LLMExecutionResult) -> None:
         self.completed += 1
-        self.total_tokens += result.actual_tokens
+        self.total_tokens += result.actual_tokens or 0
 
     def record_error(self, task: LLMTask, error: Exception) -> None:
         self.failed += 1
+
+    def record_queue_depth(self, depth: int) -> None:
+        if depth > self.queue_depth_peak:
+            self.queue_depth_peak = depth
 
     def to_dict(self) -> dict:
         return {
@@ -416,4 +426,7 @@ class SchedulerMetrics:
             "failed": self.failed,
             "retried": self.retried,
             "total_tokens": self.total_tokens,
+            "active_workers": self.active_workers,
+            "worker_exceptions": self.worker_exceptions,
+            "queue_depth_peak": self.queue_depth_peak,
         }
