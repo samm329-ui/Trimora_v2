@@ -238,7 +238,7 @@ flowchart TB
 ### High-Level System Architecture
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph Frontend["Frontend"]
         U["User"] --> FE["React SPA"]
     end
@@ -401,7 +401,7 @@ flowchart TB
 ### Data Flow
 
 ```mermaid
-flowchart LR
+flowchart TB
     VIDEO["Video File"] --> AUDIO["audio.opus"]
     AUDIO --> CHUNKS["audio/chunks/*.opus"]
     CHUNKS --> TRANSCRIPT["transcript/transcript.json"]
@@ -988,44 +988,22 @@ stateDiagram-v2
     [*] --> uploaded
     uploaded --> queued : POST /api/process
     queued --> extracting_audio : Pipeline start
-
     extracting_audio --> chunking : Audio extracted
     chunking --> transcribing : Chunks ready
     transcribing --> merging : All chunks transcribed
     merging --> segmenting : Transcript merged
     segmenting --> analyzing : Segments built
-    analyzing --> scoring : Semantic enrichment + features
+    analyzing --> scoring : Semantic enrichment
     scoring --> preview_ready : Clips ranked
     preview_ready --> export_ready : Preview built
     export_ready --> complete : MP4 rendered
 
-    uploaded --> failed
     queued --> failed
-    extracting_audio --> failed
-    chunking --> failed
-    transcribing --> failed
-    merging --> failed
-    segmenting --> failed
     analyzing --> failed
     scoring --> failed
-    preview_ready --> failed
-    export_ready --> failed
+    complete --> [*]
 
     failed --> queued : POST /api/retry
-
-    uploaded --> cancelled
-    queued --> cancelled
-    extracting_audio --> cancelled
-    chunking --> cancelled
-    transcribing --> cancelled
-    merging --> cancelled
-    segmenting --> cancelled
-    analyzing --> cancelled
-    scoring --> cancelled
-    preview_ready --> cancelled
-    export_ready --> cancelled
-
-    cancelled --> queued : POST /api/retry
 ```
 
 ---
@@ -1310,45 +1288,32 @@ Trimora implements graceful degradation at multiple levels.
 
 ```mermaid
 flowchart TD
-    START["Transcription Request"] --> PROVIDER{"Provider Setting"}
+    START["Transcription Request"] --> PROVIDER{"Provider?"}
 
-    PROVIDER -->|"faster-whisper"| WHISPER{"WhisperManager model loaded?"}
-    WHISPER -->|"Yes"| LOCAL["Local Inference CPU/GPU"]
+    PROVIDER -->|"whisper"| WHISPER{"Model loaded?"}
+    WHISPER -->|"Yes"| LOCAL["Local CPU/GPU"]
     WHISPER -->|"No"| LOAD["Load Model"]
     LOAD --> LOCAL
 
-    PROVIDER -->|"groq"| GROQ{"Groq API Key set?"}
-    GROQ -->|"Yes"| GROQ_CLIENT["Groq Client"]
-    GROQ -->|"No"| GEMINI{"Gemini API Key set?"}
+    PROVIDER -->|"groq"| GROQ{"API Key?"}
+    GROQ -->|"Yes"| GROQ_CALL["Groq API"]
+    GROQ -->|"No"| GEMINI
 
-    PROVIDER -->|"gemini"| GEMINI
+    PROVIDER -->|"gemini"| GEMINI{"API Key?"}
+    GEMINI -->|"Yes"| GEMI_CALL["Gemini API"]
+    GEMINI -->|"No"| STUB["Stub"]
 
-    GEMINI -->|"Yes"| GEMINI_CLIENT["Gemini Client"]
-    GEMINI -->|"No"| STUB["Stub Transcription"]
+    GROQ_CALL -->|"Success"| RESULT["Result"]
+    GROQ_CALL -->|"429"| RETRY["Retry"]
+    RETRY --> GROQ_CALL
 
-    GROQ_CLIENT --> RATE{"Rate Limiter"}
-    RATE -->|"Under limit"| GROQ_CALL["Groq API Call"]
-    RATE -->|"Wait"| RATE
-
-    GROQ_CALL -->|"Success"| RESULT["Transcription Result"]
-    GROQ_CALL -->|"429 Rate Limit"| RETRY["Auto-retry with backoff"]
-    RETRY --> RATE
-
-    GEMINI_CLIENT --> GEMINI_CALL["Gemini API Call"]
-    GEMINI_CALL -->|"Success"| RESULT
-    GEMINI_CALL -->|"Error"| STUB
+    GEMI_CALL -->|"Success"| RESULT
+    GEMI_CALL -->|"Error"| STUB
 
     LOCAL --> RESULT
     STUB --> RESULT
 
     style START fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
-    style PROVIDER fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
-    style WHISPER fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
-    style LOCAL fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
-    style GROQ fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
-    style GEMINI fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
-    style STUB fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
-    style RATE fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
     style RESULT fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
     style RETRY fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
 ```
@@ -1379,19 +1344,19 @@ flowchart TD
 
 ```mermaid
 flowchart TB
-    REQ["LLM Request"] --> ROUTER["ProviderRouter - thread-safe round-robin"]
+    REQ["LLM Request"] --> ROUTER["ProviderRouter"]
 
-    subgraph Buckets["Per-Instance Token Buckets"]
-        ROUTER --> B1["TokenBucket - groq-1 - 5500 tok/60s"]
-        ROUTER --> B2["TokenBucket - groq-2 - 5500 tok/60s"]
-        ROUTER --> B3["TokenBucket - groq-3 - 5500 tok/60s"]
-        ROUTER --> B4["TokenBucket - gemini - 30000 tok/60s"]
+    subgraph Buckets["Token Buckets"]
+        ROUTER --> B1["groq-1 - 5500/60s"]
+        ROUTER --> B2["groq-2 - 5500/60s"]
+        ROUTER --> B3["groq-3 - 5500/60s"]
+        ROUTER --> B4["gemini - 30000/60s"]
     end
 
-    B1 --> G1["Groq API - whisper + Llama"]
+    B1 --> G1["Groq API"]
     B2 --> G1
     B3 --> G1
-    B4 --> G2["Gemini API - flash"]
+    B4 --> G2["Gemini API"]
 
     style ROUTER fill:#06b6d4,color:#fff,stroke:#0891b2,stroke-width:2px
 ```
@@ -1411,7 +1376,7 @@ GEMINI_API_KEY=AIza...
 The ranking engine uses multiple stages to score and select the best clips.
 
 ```mermaid
-flowchart LR
+flowchart TB
     C["Candidates"] --> HC["Hard Constraints"]
     HC --> NV["Narrative Validation"]
     NV --> CTX["Context Coherence"]
