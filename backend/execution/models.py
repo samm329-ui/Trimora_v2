@@ -244,3 +244,176 @@ class ExecutionHandle:
             progress=self._progress,
             metrics=self._metrics,
         )
+
+
+# ===========================================================================
+# LLM Scheduler Types
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# TaskState — lifecycle states for LLM tasks
+# ---------------------------------------------------------------------------
+
+class TaskState(Enum):
+    CREATED = "created"
+    QUEUED = "queued"
+    WAITING_FOR_BUDGET = "waiting_for_budget"
+    EXECUTING = "executing"
+    RETRYING = "retrying"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+# ---------------------------------------------------------------------------
+# TaskPriority — alias for RequestPriority
+# ---------------------------------------------------------------------------
+
+TaskPriority = RequestPriority
+
+
+# ---------------------------------------------------------------------------
+# SplitMetadata — metadata for split chunks (reassembly)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class SplitMetadata:
+    """Metadata for split chunks. Enables deterministic reassembly."""
+
+    original_prompt_id: str
+    chunk_index: int
+    total_chunks: int
+    start_offset: int
+    end_offset: int
+    original_token_count: int
+
+
+# ---------------------------------------------------------------------------
+# LLMTask — a single LLM execution unit
+# ---------------------------------------------------------------------------
+
+@dataclass
+class LLMTask:
+    """A single LLM execution unit with token accounting."""
+
+    task_id: str
+    prompt_id: str
+    prompt_tokens: int
+    expected_output_tokens: int
+    model_name: str
+    job_id: str
+    stage: str
+    task_type: str = "general"
+    priority: TaskPriority = TaskPriority.NORMAL
+    state: TaskState = TaskState.CREATED
+    state_history: list[tuple[TaskState, float]] = field(default_factory=list)
+    split_metadata: SplitMetadata | None = None
+    created_at: float = field(default_factory=time.monotonic)
+
+    def transition(self, new_state: TaskState) -> None:
+        """Transition to a new state, recording history."""
+        self.state = new_state
+        self.state_history.append((new_state, time.monotonic()))
+
+    @property
+    def estimated_total_tokens(self) -> int:
+        return self.prompt_tokens + self.expected_output_tokens
+
+
+# ---------------------------------------------------------------------------
+# generate_task_id — deterministic task ID from job + stage + prompt_hash
+# ---------------------------------------------------------------------------
+
+def generate_task_id(job_id: str, stage: str, prompt_hash: str, chunk: int = 0) -> str:
+    """Generate a deterministic task ID."""
+    return f"{job_id}_{stage}_{prompt_hash[:8]}_{chunk}"
+
+
+# ---------------------------------------------------------------------------
+# LLMExecutionResult — result from LLM scheduler execution
+# ---------------------------------------------------------------------------
+
+@dataclass
+class LLMExecutionResult:
+    """Result from LLM scheduler execution."""
+
+    task_id: str
+    status: str  # "completed" | "failed"
+    data: dict = field(default_factory=dict)
+    error: str | None = None
+    task_state: TaskState = TaskState.COMPLETED
+    reservation_id: str | None = None
+    actual_tokens: int = 0
+    metrics: RequestMetrics = field(default_factory=RequestMetrics)
+
+
+# ---------------------------------------------------------------------------
+# LLMExecutionHandle — tracks async LLM task completion
+# ---------------------------------------------------------------------------
+
+class LLMExecutionHandle:
+    """Handle for tracking async LLM task completion."""
+
+    def __init__(self, task: LLMTask):
+        self._task = task
+        self._future: asyncio.Future[LLMExecutionResult] = asyncio.get_event_loop().create_future()
+
+    @property
+    def task(self) -> LLMTask:
+        return self._task
+
+    @property
+    def task_id(self) -> str:
+        return self._task.task_id
+
+    async def result(self) -> LLMExecutionResult:
+        return await self._future
+
+    def set_result(self, result: LLMExecutionResult) -> None:
+        if not self._future.done():
+            self._future.set_result(result)
+
+    def set_error(self, error: Exception) -> None:
+        if not self._future.done():
+            self._future.set_exception(error)
+
+    @property
+    def is_done(self) -> bool:
+        return self._future.done()
+
+
+# ---------------------------------------------------------------------------
+# SchedulerMetrics — scheduler-level metrics
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SchedulerMetrics:
+    """Scheduler-level metrics."""
+
+    submitted: int = 0
+    completed: int = 0
+    failed: int = 0
+    retried: int = 0
+    total_tokens: int = 0
+    queue_wait_total: float = 0.0
+    execution_time_total: float = 0.0
+
+    def record_submission(self, task: LLMTask) -> None:
+        self.submitted += 1
+
+    def record_completion(self, task: LLMTask, result: LLMExecutionResult) -> None:
+        self.completed += 1
+        self.total_tokens += result.actual_tokens
+
+    def record_error(self, task: LLMTask, error: Exception) -> None:
+        self.failed += 1
+
+    def to_dict(self) -> dict:
+        return {
+            "submitted": self.submitted,
+            "completed": self.completed,
+            "failed": self.failed,
+            "retried": self.retried,
+            "total_tokens": self.total_tokens,
+        }
