@@ -49,6 +49,27 @@ from backend.storage.job_store import JobStore
 from backend.utils.text_utils import split_sentences
 from backend.workers.scheduler import Scheduler
 
+# V10.1 Pipeline Core
+from backend.core.v101_bridge import (
+    segments_to_graph_artifact,
+    build_pipeline_context,
+    merge_strategy_results,
+    objective_results_to_scores,
+)
+from backend.models.data import CandidatesData
+from backend.strategies.builtin import StoryStrategy, HookStrategy, RevealStrategy, ReactionStrategy, OpinionStrategy
+from backend.optimization.deduplication import CandidateDeduplicationService
+from backend.objectives.registry import ObjectiveRegistry
+from backend.objectives.builtin import (
+    HookDeliveryObjective, StandaloneObjective, EndingObjective, DeadTimeObjective,
+    NarrativeCoherenceObjective, InformationDensityObjective, TemporalFlowObjective,
+    EmotionalArcObjective, CreatorFitObjective, VisualQualityObjective,
+)
+from backend.optimization.narrative import NarrativeOptimizer
+from backend.optimization.portfolio import PortfolioOptimizer
+from backend.evaluation.layer import EvaluationLayer
+from backend.services.snapshots import PipelineSnapshotService, SnapshotV1
+
 
 @dataclass
 class ChunkPerformance:
@@ -94,9 +115,40 @@ class ProductionPipeline:
         self.block_synopsis_generator = BlockSynopsisGenerator(self.embedding_service)
         self.priority_ranker = PriorityRanker()
         self.transcript_summarizer = TranscriptSummarizer(self.llm_provider)
+        # V10.1 Pipeline Core
+        self.strategies = [StoryStrategy(), HookStrategy(), RevealStrategy(), ReactionStrategy(), OpinionStrategy()]
+        self.dedup_service = CandidateDeduplicationService(threshold=0.5)
+        self.objective_registry = self._build_objective_registry()
+        self.narrative_optimizer = NarrativeOptimizer()
+        self.portfolio_optimizer = PortfolioOptimizer(top_k=20)
+        self.snapshot_service = None  # Initialized per job
 
     async def _publish_event(self, job_id: str, name: str, payload: dict) -> None:
         await self.event_bus.publish(PipelineEvent(job_id=job_id, name=name, payload=payload))
+
+    def _build_objective_registry(self) -> ObjectiveRegistry:
+        """Build the V10.1 objective registry with all 10 objectives in dependency order."""
+        registry = ObjectiveRegistry()
+        registry.register(HookDeliveryObjective())
+        registry.register(StandaloneObjective())
+        registry.register(EndingObjective())
+        registry.register(DeadTimeObjective())
+        registry.register(NarrativeCoherenceObjective())
+        registry.register(InformationDensityObjective())
+        registry.register(TemporalFlowObjective())
+        registry.register(EmotionalArcObjective())
+        registry.register(CreatorFitObjective())
+        registry.register(VisualQualityObjective())
+        return registry
+
+    def _get_git_commit(self) -> str:
+        """Get current git commit hash."""
+        try:
+            import subprocess
+            result = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=5)
+            return result.stdout.strip() if result.returncode == 0 else "unknown"
+        except Exception:
+            return "unknown"
 
     def _check_cancelled(self, job_id: str) -> JobRecord | None:
         job = self.job_store.load_job(job_id)
@@ -496,6 +548,96 @@ class ProductionPipeline:
             cancelled = self._check_cancelled(job_id)
             if cancelled:
                 return cancelled
+
+            # --- V10.1 Pipeline Core Integration ---
+            v101_start = perf_counter()
+            self.job_store.set_status(job_id, JobStatus.analyzing, 0.81)
+
+            # Initialize snapshot service for this job
+            self.snapshot_service = PipelineSnapshotService(workdir)
+
+            # Step V1: Convert segments to graph artifact for strategies
+            graph_artifact = segments_to_graph_artifact(segments)
+            pipeline_context = build_pipeline_context(segments, graph_artifact)
+
+            # Step V2: Run all 5 clip strategies
+            strategy_results = []
+            for strategy in self.strategies:
+                try:
+                    result = await strategy.generate(pipeline_context)
+                    strategy_results.append(result)
+                except Exception as e:
+                    logger.warning("Strategy %s failed: %s", strategy.strategy_id(), e)
+
+            # Step V3: Merge strategy candidates
+            all_candidates, strategies_used = merge_strategy_results(strategy_results)
+            await self._publish_event(job_id, "v101_strategies_done", {
+                "candidate_count": len(all_candidates),
+                "strategies": strategies_used,
+            })
+
+            # Step V4: Deduplicate candidates
+            if all_candidates:
+                dedup_artifact = await self.dedup_service.execute({"candidates": graph_artifact})
+                all_candidates = dedup_artifact.data.candidates if dedup_artifact and dedup_artifact.data else all_candidates
+
+            # Step V5: Score candidates with V10.1 objectives (DAG order)
+            scored_candidates = []
+            for candidate in all_candidates:
+                obj_results = self.objective_registry.score_all(candidate, {"job_id": job_id})
+                score_summary = objective_results_to_scores(obj_results, candidate)
+                scored_candidates.append({
+                    **candidate,
+                    "objective_scores": score_summary["objective_scores"],
+                    "v101_score": score_summary["overall_score"],
+                })
+
+            # Step V6: Narrative optimization (sort by start time)
+            scores_artifact = CandidatesData(
+                candidates=scored_candidates,
+                candidate_count=len(scored_candidates),
+                strategies_used=strategies_used,
+            )
+            from backend.core.artifact import Artifact as V101Artifact, generate_deterministic_id, compute_output_hash
+            scores_v101_artifact = V101Artifact(
+                artifact_id=generate_deterministic_id(graph_artifact.compute_hash(), "scores", 1, output_hash=compute_output_hash(scores_artifact)),
+                version=1, created_at=time.time(),
+                data=scores_artifact,
+            )
+            narrative_result = await self.narrative_optimizer.execute({"scores": scores_v101_artifact})
+
+            # Step V7: Portfolio optimization (MMR + diversity)
+            portfolio_result = await self.portfolio_optimizer.execute({"narrative": narrative_result})
+
+            # Step V8: Save evaluation records
+            eval_dir = workdir / "evaluations"
+            eval_dir.mkdir(exist_ok=True)
+            eval_layer = EvaluationLayer(eval_dir)
+            eval_context = type('Context', (), {
+                "job_id": job_id,
+                "config": type('Config', (), {"to_dict": lambda self: {"pipeline_version": "v10.1.0"}})()
+            })()
+            if portfolio_result and portfolio_result.data:
+                eval_result = await eval_layer.execute(eval_context, portfolio_result)
+                await self._publish_event(job_id, "v101_evaluation_done", {
+                    "record_count": len(eval_result.get("records", [])),
+                })
+
+            # Step V9: Save snapshot
+            snapshot = SnapshotV1(
+                stage="v101_complete",
+                timestamp=time.time(),
+                job_id=job_id,
+                data={"candidate_count": len(scored_candidates), "strategies_used": strategies_used},
+                config_snapshot={"pipeline_version": "v10.1.0"},
+                git_commit=self._get_git_commit(),
+                feature_flags={"v101_enabled": True},
+            )
+            self.snapshot_service.save_snapshot(snapshot)
+
+            v101_ms = (perf_counter() - v101_start) * 1000
+            await self._publish_event(job_id, "v101_complete", {"v101_ms": v101_ms})
+            logger.info("V10.1 pipeline stages completed in %.0fms", v101_ms)
 
             # --- End Semantic Enrichment ---
 
