@@ -1,30 +1,30 @@
-# Trimora
+# Trimora V10.1
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg)](https://fastapi.tiangolo.com/)
 [![React 18](https://img.shields.io/badge/React-18-61DAFB.svg)](https://react.dev/)
 [![FFmpeg](https://img.shields.io/badge/FFmpeg-FFmpeg-orange.svg)](https://ffmpeg.org/)
-[![Tests](https://img.shields.io/badge/tests-150%20passing-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-181%20passing-brightgreen.svg)]()
+[![Pipeline](https://img.shields.io/badge/pipeline-V10.1-green.svg)]()
 
-> AI-powered platform that transforms long-form videos into engaging short-form clips using an audio-first processing pipeline with embedding-based semantic enrichment and LLM story reasoning.
+> AI-powered platform that transforms long-form videos into engaging short-form clips. V10.1 introduces a production-grade pipeline core with deterministic artifacts, immutable data, DAG execution, and pluggable strategies/objectives.
 
 ---
 
 ## Quick Navigation
 
 - [Overview](#overview)
+- [V10.1 Production Core](#v101-production-core)
 - [Features](#features)
 - [Tech Stack](#tech-stack)
 - [Architecture](#architecture)
 - [Execution Layer V2](#execution-layer-v2)
-- [ProviderRouter](#providerrouter-multi-key-load-balancing)
 - [Semantic Enrichment Pipeline](#semantic-enrichment-pipeline)
 - [Project Structure](#project-structure)
 - [Production Pipeline](#production-pipeline)
 - [Job Lifecycle](#job-lifecycle)
 - [API Reference](#api-reference)
-- [Transcription Performance Monitoring](#transcription-performance-monitoring)
 - [Ranking Engine](#ranking-engine)
 - [Frontend](#frontend)
 - [Configuration](#configuration)
@@ -38,7 +38,7 @@
 
 ## Overview
 
-Trimora takes a long video (podcast, lecture, interview) and automatically extracts the best short-form clips. The pipeline processes audio independently of video, using parallel transcription, embedding-based topic clustering, LLM-driven semantic enrichment, multi-signal feature extraction, and a multi-stage ranking engine to identify the most engaging moments.
+Trimora takes a long video (podcast, lecture, interview) and automatically extracts the best short-form clips. V10.1 rebuilds the pipeline core with production-grade guarantees: deterministic artifact IDs, immutable data types, DAG-based execution, automatic budget enforcement, and pluggable strategies and objectives.
 
 **Processing time estimates** (with Faster-Whisper GPU transcription):
 
@@ -48,9 +48,7 @@ Trimora takes a long video (podcast, lecture, interview) and automatically extra
 | 30 minutes | 40 | ~40-80s | ~8s | ~60-100s |
 | 1 hour | 80 | ~80-160s | ~15s | ~2-4 min |
 
-> **Note:** With GTX 1650 (4GB VRAM) and large-v3 model, expect RTF ~0.1-0.3 (3-10x faster than real-time). See [Transcription Performance Monitoring](#transcription-performance-monitoring) for details.
-
-**Processing time estimates** (with cloud transcription - Groq/Gemini):
+**Processing time estimates** (with cloud transcription — Groq/Gemini):
 
 | Video Length | Chunks | Transcription | Semantic | Total |
 |---|---|---|---|---|
@@ -58,7 +56,127 @@ Trimora takes a long video (podcast, lecture, interview) and automatically extra
 | 1 hour | 40 | ~160s | ~8s | ~3 min |
 | 3 hours | 120 | ~480s | ~20s | ~9 min |
 
-> **Execution Layer V2** reduces semantic processing from ~6 min to ~2-3 min (~40-50% improvement) through async parallel execution, provider-agnostic request handling, and concurrent worker pools. **ProviderRouter** distributes load across multiple Groq API keys for improved throughput.
+---
+
+## V10.1 Production Core
+
+V10.1 introduces a complete pipeline execution core with 10 production-readiness guarantees. Every component is immutable, deterministic, and budget-enforced.
+
+### Core Modules
+
+```mermaid
+flowchart TB
+    subgraph Core ["Pipeline Core"]
+        ART["Artifact[T]\n(frozen, deterministic IDs)"]
+        CTX["ExecutionContext\n(split concerns)"]
+        DAG["DAGExecutor\n(semaphore, budget, priority)"]
+        ORCH["PipelineOrchestrator\n(wires stages into DAG)"]
+    end
+
+    subgraph Data ["Data Models"]
+        TD["TranscriptData"]
+        SD["SignalData"]
+        ED["EvidenceData"]
+        GD["GraphData"]
+        CD["CandidatesData"]
+        SCD["ScoresData"]
+        PD["PortfolioData"]
+        EVD["EvaluationData"]
+        GTD["GroundTruthData"]
+    end
+
+    subgraph Config ["Configuration"]
+        PS["PipelineSettings\n(frozen)"]
+        SB["StageBudgets\n(11 stages)"]
+        WC["WindowConfig"]
+    end
+
+    subgraph Strategies ["Clip Strategies"]
+        ST["ClipStrategy ABC"]
+        STORY["StoryStrategy"]
+        HOOK["HookStrategy"]
+        REVEAL["RevealStrategy"]
+        REACT["ReactionStrategy"]
+        OPINION["OpinionStrategy"]
+    end
+
+    subgraph Objectives ["Scoring Objectives"]
+        OBJ["Objective ABC"]
+        HD["HookDelivery"]
+        SA["Standalone"]
+        EN["Ending"]
+        DT["DeadTime"]
+        NC["NarrativeCoherence"]
+        ID["InformationDensity"]
+        TF["TemporalFlow"]
+        EA["EmotionalArc"]
+        CF["CreatorFit"]
+        VQ["VisualQuality"]
+    end
+
+    subgraph Optimization ["Optimization"]
+        NO["NarrativeOptimizer"]
+        PO["PortfolioOptimizer\n(MMR + SimilarityProvider)"]
+        CDS["CandidateDeduplication\n(SimilarityProvider)"]
+    end
+
+    subgraph Graph ["Graph"]
+        EG["EvidenceGraph\n(window flattening)"]
+        PKG["PersistentKnowledgeGraph"]
+    end
+
+    subgraph Evaluation ["Evaluation"]
+        EL["EvaluationLayer\n(lifecycle states)"]
+        SSR["PipelineSnapshots\n(git commit, model versions)"]
+    end
+
+    ORCH --> DAG
+    DAG --> ART
+    CTX --> PS
+    ST --> STORY & HOOK & REVEAL & REACT & OPINION
+    OBJ --> HD & SA & EN & DT & NC & ID & TF & EA & CF & VQ
+    NO --> CD
+    PO --> CD
+    CDS --> CD
+    EL --> PD
+
+    style ART fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
+    style DAG fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
+    style ORCH fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
+    style PS fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
+```
+
+### 10 Production Guarantees
+
+| # | Guarantee | Implementation |
+|---|---|---|
+| 1 | **Immutable data types** | All 9 data models use `frozen=True` |
+| 2 | **Deterministic artifact IDs** | `generate_deterministic_id()` with `output_hash` parameter |
+| 3 | **ExecutionContext not a God Object** | Split into `PipelineConfig`, `MetricsCollector`, `CacheStore`, `LoggerAdapter` |
+| 4 | **Immutable PipelineContext** | `PipelineContext` is frozen, read-only |
+| 5 | **DAG returns ExecutionResult** | Not `dict` — immutable result with trace, errors, latency stats |
+| 6 | **Objective dependencies as DAG** | `ObjectiveRegistry` uses topological sort, not simple loop |
+| 7 | **SimilarityProvider interface** | Not hardcoded Jaccard — pluggable via ABC |
+| 8 | **Evaluation lifecycle states** | `EvaluationLifecycle`: GENERATED, REVIEWED, APPROVED, REJECTED, DEPLOYED |
+| 9 | **Snapshots with full context** | `SnapshotV1` includes git commit, model versions, feature flags |
+| 10 | **Automatic budget enforcement** | `BudgetEnforcer`: warning → count → disable → fallback |
+
+### Pipeline Stage Budgets
+
+| Stage | Budget | Warning | Description |
+|---|---|---|---|
+| adaptive_windows | 100ms | 80ms | Window splitting |
+| signal_extraction | 200ms | 160ms | Audio/text signal extraction |
+| evidence_compilation | 500ms | 400ms | Evidence graph compilation |
+| graph_construction | 300ms | 240ms | Knowledge graph build |
+| role_classification | 150ms | 120ms | Hook/body/ending classification |
+| strategy_execution | 1000ms | 800ms | All clip strategies |
+| candidate_deduplication | 100ms | 80ms | Similarity dedup |
+| objective_scoring | 2000ms | 1600ms | All 10 objectives |
+| narrative_optimization | 200ms | 160ms | Narrative flow sort |
+| portfolio_optimization | 200ms | 160ms | MMR + diversity |
+| evaluation_recording | 50ms | 40ms | Save evaluation records |
+| **Total** | **5000ms** | — | Pipeline-wide budget |
 
 ---
 
@@ -67,7 +185,7 @@ Trimora takes a long video (podcast, lecture, interview) and automatically extra
 | Feature | Description |
 |---|---|
 | Audio-First Processing | Extract audio once, process independently of video |
-| Local Transcription | Faster-Whisper with auto model selection (tiny→large-v3) |
+| Local Transcription | Faster-Whisper with auto model selection (tiny → large-v3) |
 | Cloud Transcription | Groq/Gemini as fallback or primary provider |
 | Per-Job Language Caching | Language detected once, reused across all chunks |
 | Parallel Transcription | Rate-limited concurrent processing |
@@ -81,10 +199,16 @@ Trimora takes a long video (podcast, lecture, interview) and automatically extra
 | Story Detection & Repair | Candidate formation, verification, and repair |
 | Blueprint Generation | Story-to-blueprint conversion with cut selection |
 | Multi-Stage Ranking | Semantic deduplication with MMR optimization |
+| Deterministic Artifacts | Hash-based IDs with output_hash for true determinism |
+| Immutable Data Types | All data models are frozen (immutable) |
+| DAG Execution | Semaphore-controlled, priority-queued, budget-enforced |
+| Pluggable Strategies | 5 built-in strategies (Story, Hook, Reveal, Reaction, Opinion) |
+| Pluggable Objectives | 10 built-in scoring objectives with dependency DAG |
+| Pipeline Snapshots | Git commit, model versions, feature flags at each stage |
+| Evaluation Lifecycle | 5-state lifecycle: Generated → Reviewed → Approved → Rejected → Deployed |
 | Checkpointing | Pass 1 and Pass 2 resume from last completed batch |
 | FFmpeg Rendering | Direct MP4 clip export |
 | Performance Monitoring | Per-chunk RTF logging and transcription analytics |
-| Learning Pipeline | Continuous improvement from analytics |
 | Dark Theme UI | Modern React frontend with dark mode |
 
 ---
@@ -94,6 +218,7 @@ Trimora takes a long video (podcast, lecture, interview) and automatically extra
 | Layer | Technology |
 |---|---|
 | Backend | Python 3.11+, FastAPI, Pydantic v2 |
+| Pipeline Core | Custom DAG executor, frozen dataclasses, deterministic hashing |
 | Frontend | React 18, TypeScript, Vite, Tailwind CSS |
 | Media Processing | FFmpeg, ffprobe |
 | Transcription | Faster-Whisper (local, CPU/GPU), Groq (cloud), Gemini (cloud) |
@@ -116,9 +241,16 @@ flowchart LR
     end
 
     subgraph Backend ["Backend"]
-        FE -->|POST /api/process| API["FastAPI"]
+        FE -->|"POST /api/process"| API["FastAPI"]
         API --> ORC["Orchestrator"]
         ORC --> PIPE["Production Pipeline"]
+    end
+
+    subgraph Core ["Pipeline Core V10.1"]
+        PIPE --> DAG["DAGExecutor"]
+        DAG --> ART["Artifact[T]"]
+        DAG --> BUD["BudgetEnforcer"]
+        DAG --> TRACE["ExecutionResult"]
     end
 
     subgraph Ingestion ["Ingestion"]
@@ -130,10 +262,10 @@ flowchart LR
     subgraph Transcription ["Parallel Transcription"]
         SCHED --> WP["Worker Pool"]
         WP --> TRANS["Transcription"]
-        TRANS -->|local| WM["WhisperManager\n(singleton)"]
-        WM --> FW["Faster-Whisper\n(CPU/GPU)"]
-        TRANS -->|cloud| GROQ["Groq API"]
-        TRANS -->|fallback| GEMINI["Gemini API"]
+        TRANS -->|"local"| WM["WhisperManager"]
+        WM --> FW["Faster-Whisper"]
+        TRANS -->|"cloud"| GROQ["Groq API"]
+        TRANS -->|"fallback"| GEMINI["Gemini API"]
         TRANS --> MERGE["Transcript Merge"]
     end
 
@@ -146,7 +278,6 @@ flowchart LR
         FEAT --> EMB["Embedding Clustering"]
         EMB --> BLOCKS["Topic Blocks"]
         BLOCKS --> SYN["Block Synopses"]
-        SYN --> PRI["Priority Queue"]
         SYN --> SUM["Structured Summary"]
         SUM --> P1["Pass 1: Annotation"]
         P1 --> P2["Pass 2: Story Reasoning"]
@@ -155,24 +286,16 @@ flowchart LR
         SV --> BG["Blueprint Generation"]
     end
 
-    subgraph LLMProviders ["LLM Providers (via ProviderRouter)"]
-        SUM --> ROUTER["ProviderRouter\n(round-robin)"]
-        P1 --> ROUTER
-        P2 --> ROUTER
-        ROUTER --> GROQ_MULTIPLE["Groq API\n(multiple keys)"]
-        ROUTER --> GEMINI_LLM["Gemini API"]
-    end
-
     subgraph Output ["Output"]
         FEAT --> RANK["Ranking Engine"]
         RANK --> PREV["Preview"]
         PREV --> RENDER["FFmpeg Render"]
     end
 
-    subgraph Learning ["Background Learning"]
-        RENDER --> LEARN["Analytics"]
-        LEARN --> STORE[("Local Storage")]
-    end
+    style DAG fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
+    style ART fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
+    style BUD fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
+    style TRACE fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
 ```
 
 ### Data Flow
@@ -202,31 +325,31 @@ flowchart LR
 
 ## Execution Layer V2
 
-The Execution Layer V2 replaces service-driven LLM execution with a provider-agnostic engine. This reduces semantic processing time by ~40-50% through async parallel execution and proper rate limiting.
+The Execution Layer V2 replaces service-driven LLM execution with a provider-agnostic engine.
 
 ### Architecture
 
 ```mermaid
 flowchart TB
     subgraph App ["Application Start"]
-        ENGINE["ExecutionEngine\n(created once)"]
-        SESSION["ProviderSession\n(rate limiting + middleware)"]
+        ENGINE["ExecutionEngine"]
+        SESSION["ProviderSession"]
         ENGINE --> SESSION
     end
 
     subgraph Pipeline ["Per Job"]
         PL["Pipeline Layer"]
-        PL -->|"creates ExecutionRequest\n(immutable: builder + context)"| HANDLE["ExecutionHandle\n(snapshot, cancel)"]
-        HANDLE --> EXEC["PipelineExecutor\n(submits stages, waits)"]
+        PL -->|"creates ExecutionRequest"| HANDLE["ExecutionHandle"]
+        HANDLE --> EXEC["PipelineExecutor"]
         EXEC -->|"delegates to"| ENGINE
     end
 
     subgraph Providers ["Provider Layer"]
-        SESSION --> ROUTER["ProviderRouter\n(round-robin)"]
-        ROUTER --> GROQ1["groq-1\n(5,500 tok/60s)"]
-        ROUTER --> GROQ2["groq-2\n(5,500 tok/60s)"]
-        ROUTER --> GROQ3["groq-3\n(5,500 tok/60s)"]
-        ROUTER --> GEMINI["gemini\n(30,000 tok/60s)"]
+        SESSION --> ROUTER["ProviderRouter"]
+        ROUTER --> GROQ1["groq-1\n5500 tok/60s"]
+        ROUTER --> GROQ2["groq-2\n5500 tok/60s"]
+        ROUTER --> GROQ3["groq-3\n5500 tok/60s"]
+        ROUTER --> GEMINI["gemini\n30000 tok/60s"]
     end
 
     style ENGINE fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
@@ -242,59 +365,14 @@ flowchart TB
 | Component | Location | Purpose |
 |---|---|---|
 | `ExecutionEngine` | `backend/execution/engine.py` | Generic task runner with priority queue, workers, retries, timeouts |
-| `PipelineExecutor` | `backend/execution/engine.py` | Orchestrates pipeline stages; does NOT parse results |
+| `PipelineExecutor` | `backend/execution/engine.py` | Orchestrates pipeline stages |
 | `ProviderSession` | `backend/execution/provider_session.py` | Rate limiting, token estimation, middleware chain |
-| `AsyncRateLimiter` | `backend/execution/provider_session.py` | Sliding-window token bucket (never blocks event loop) |
+| `AsyncRateLimiter` | `backend/execution/provider_session.py` | Sliding-window token bucket |
 | `ProviderRouter` | `backend/services/llm_provider.py` | Thread-safe round-robin across multiple API keys/providers |
 | `SegmentRepository` | `backend/execution/repository.py` | Read-only data access for prompt construction |
 | `PromptBuilder` | `backend/execution/models.py` | Abstract base; each service implements its own |
 | `PromptContext` | `backend/execution/models.py` | Lightweight, immutable context (IDs, not full objects) |
 | `ExecutionProfiler` | `backend/execution/profiler.py` | Event-based timing and metrics collection |
-
-### Data Types
-
-```mermaid
-classDiagram
-    class ExecutionRequest {
-        +str request_id
-        +PromptBuilder prompt_builder
-        +PromptContext prompt_context
-        +PipelineStage stage
-        +RequestPriority priority
-        +RetryPolicy retry_policy
-        +TimeoutPolicy timeout_policy
-    }
-    class ExecutionHandle {
-        +Future~ExecutionResult~ _future
-        +bool _cancelled
-        +result() ExecutionResult
-        +cancel() bool
-        +snapshot() HandleSnapshot
-    }
-    class ExecutionResult {
-        +str request_id
-        +dict raw_response
-        +str status
-        +RequestMetrics metrics
-        +Exception error
-        +bool retryable
-    }
-    class PromptContext {
-        +int block_index
-        +int batch_index
-        +tuple~int~ segment_ids
-        +str summary
-        +dict extra
-    }
-    class PromptBuilder {
-        <<abstract>>
-        +build(context, repo) str
-    }
-    ExecutionRequest --> PromptBuilder
-    ExecutionRequest --> PromptContext
-    ExecutionHandle --> ExecutionResult
-    PromptBuilder --> PromptContext : uses
-```
 
 ### Request Flow
 
@@ -307,21 +385,20 @@ sequenceDiagram
     participant W as Worker
     participant S as ProviderSession
     participant R as ProviderRouter
-    participant L as LLM Provider (Groq/Gemini)
+    participant L as LLM Provider
 
-    P->>PE: submit_stage(STAGE_PASS1, requests, repo)
+    P->>PE: submit_stage(requests, repo)
     PE->>E: submit(request, repo)
-    E->>Q: put((priority, timestamp, request, repo))
+    E->>Q: put((priority, timestamp, request))
     E-->>P: ExecutionHandle
 
     loop Worker Loop
         W->>Q: get()
-        Q-->>W: (priority, ts, request, repo)
-        W->>W: prompt = request.prompt_builder.build(request.prompt_context, repo)
+        Q-->>W: (priority, ts, request)
         W->>S: execute(prompt, request_id)
-        S->>S: rate_limiter.acquire(estimated_tokens)
+        S->>S: rate_limiter.acquire(tokens)
         S->>R: complete(prompt)
-        R->>R: next() — round-robin selection
+        R->>R: next() round-robin
         R->>L: complete(prompt)
         L-->>R: raw_response
         R-->>S: raw_response
@@ -329,98 +406,50 @@ sequenceDiagram
         W->>W: handle._future.set_result(result)
     end
 
-    P->>PE: wait_for_stage(STAGE_PASS1)
+    P->>PE: wait_for_stage()
     PE->>W: await handle.result()
     W-->>P: list[ExecutionHandle]
-    P->>P: parse_result(result) for each handle
 ```
-
-### Design Principles
-
-| Principle | Implementation |
-|---|---|
-| **ExecutionRequest is immutable** | `frozen=True` dataclass; PromptContext contains IDs, not objects |
-| **PromptBuilder stays in each service** | Each service owns its prompt construction logic |
-| **Response parsing stays in each service** | Each service owns `parse_result()` — engine never parses |
-| **ProviderSession owns rate limiting** | AsyncRateLimiter uses sliding window; lock released before sleep |
-| **PipelineExecutor only orchestrates** | Registers stages, submits requests, waits — no result parsing |
-| **ExecutionEngine owns scheduling** | Priority queue, worker pools, retries, timeouts, event emission |
-| **SegmentRepository is read-only** | Created per job; PromptBuilder resolves IDs through it |
-| **Engine lifetime is application-wide** | Created once at app start, shared across all jobs |
-| **Middleware wraps the provider** | Logging, auth, compression at provider level, not scheduling level |
-| **Error classification** | `_is_retryable()` differentiates rate limits, timeouts, network, invalid response, provider errors |
-| **ProviderRouter distributes load** | Thread-safe round-robin across multiple API keys; per-instance TokenBucket |
-
-### Event-Based Profiling
-
-The engine emits events for monitoring and profiling:
-
-| Event | When | Payload |
-|---|---|---|
-| `request_queued` | Request submitted to queue | request_id, stage, priority, queue_size |
-| `request_started` | Worker picks up request | request_id, attempt |
-| `request_completed` | Successful completion | request_id, tokens, execution_time |
-| `request_failed` | Non-retryable failure | request_id, error, retryable |
-| `request_retry` | Retryable failure | request_id, attempt, error |
-| `request_timeout` | Execution timeout | request_id |
-| `request_cancelled` | Handle cancelled | request_id |
 
 ---
 
 ## Semantic Enrichment Pipeline
 
-The semantic enrichment layer uses an **embedding-first architecture** that dramatically reduces LLM calls while improving quality through global context.
+The semantic enrichment layer uses an **embedding-first architecture** that reduces LLM calls while improving quality.
 
 ### Pipeline Flow
 
 ```mermaid
 flowchart TB
-    START([Segments + Transcript]) --> EMB["Embedding Clustering"]
-    EMB -->|"sentence-transformers\n384-dim vectors"| BLOCKS["Topic Blocks\n(3-7 segments each)"]
+    START(["Segments + Transcript"]) --> EMB["Embedding Clustering"]
+    EMB -->|"384-dim vectors"| BLOCKS["Topic Blocks\n3-7 segments each"]
     BLOCKS --> SYNOPSIS["Deterministic Synopsis\nper Block"]
-    SYNOPSIS --> PRIORITY["Priority Queue\n(scheduling only)"]
-    
+    SYNOPSIS --> PRIORITY["Priority Queue"]
+
     BLOCKS --> EXEC["Execution Layer V2"]
-    EXEC --> ROUTER3["ProviderRouter\n(round-robin across keys)"]
-    ROUTER3 --> SUMMARY["Structured Summary\n(1 LLM call)"]
-    SUMMARY -->|"main_topic, major_topics,\nnarrative_arc, key_entities"| PASS1["Pass 1: Segment Annotation\n(parallel batches via ExecutionEngine)"]
-    
+    EXEC --> ROUTER3["ProviderRouter"]
+    ROUTER3 --> SUMMARY["Structured Summary\n1 LLM call"]
+    SUMMARY --> PASS1["Pass 1: Segment Annotation\nparallel batches"]
     PRIORITY --> PASS1
     BLOCKS --> PASS1
-    PASS1 -->|"timeline order,\nblock boundaries,\nsummary context"| ANNOTATIONS["Segment Annotations"]
-    
-    ANNOTATIONS --> PASS2["Pass 2: Story Reasoning\n(parallel blocks via ExecutionEngine)"]
+    PASS1 --> ANNOTATIONS["Segment Annotations"]
+
+    ANNOTATIONS --> PASS2["Pass 2: Story Reasoning\nparallel blocks"]
     BLOCKS --> PASS2
     SUMMARY --> PASS2
-    PASS2 -->|"block-based prompts,\nadjacent block context"| BOUNDARIES["Story Boundaries"]
-    
+    PASS2 --> BOUNDARIES["Story Boundaries"]
+
     BOUNDARIES --> DETECT["Story Detection"]
     DETECT --> VALIDATE["Story Validation"]
     VALIDATE --> BLUEPRINTS["Blueprint Generation"]
 
     style EMB fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
     style BLOCKS fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
-    style SYNOPSIS fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
     style EXEC fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
-    style ROUTER3 fill:#06b6d4,color:#fff,stroke:#0891b2,stroke-width:2px
     style SUMMARY fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
     style PASS1 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
     style PASS2 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
 ```
-
-### Embedding Clustering
-
-Segments are grouped into topic blocks using sliding window embeddings:
-
-| Parameter | Default | Description |
-|---|---|---|
-| `min_window` | 3 | Minimum segments per block |
-| `target_window` | 5 | Target segments per block |
-| `max_window` | 7 | Maximum segments per block |
-| `max_duration` | 60s | Max block duration (windows expand if below) |
-| `max_tokens` | 2000 | Max tokens per block (windows shrink if above) |
-| `threshold_std` | 1.5 | Z-score threshold for boundary detection |
-| `smoothing_window` | 3 | Local smoothing window for adaptive threshold |
 
 ### Token Savings
 
@@ -431,17 +460,6 @@ Segments are grouped into topic blocks using sliding window embeddings:
 | Total LLM calls | 118 | 23 | 81% |
 | Total tokens | ~145K | ~35K | 76% |
 
-### Key Design Decisions
-
-- **Timeline order is immutable** — semantic pipeline never reorders segments; priority queue is only for job scheduling
-- **No auto-merging of short blocks** — Story Detection decides whether blocks belong together
-- **Deterministic synopses** — fixed template for debugging and versioning
-- **Structural vs semantic confidence kept separate** — embedding clustering provides structural confidence, LLM provides semantic confidence
-- **Block embeddings persisted** — reusable for search, duplicate detection, and recommendations
-- **Summary includes representative excerpts** — grounded in actual transcript wording, not just synopses
-- **PromptBuilder per service** — each service owns its prompt construction; PromptContext is lightweight (IDs, not objects)
-- **Execution Layer for LLM calls** — Summary, Pass 1, Pass 2 run through ProviderSession with async rate limiting and parallel workers
-
 ---
 
 ## Project Structure
@@ -449,223 +467,250 @@ Segments are grouped into topic blocks using sliding window embeddings:
 ```text
 trimora/
 ├── backend/
-│   ├── main.py                          # Uvicorn entry point
+│   ├── main.py
 │   ├── app/
-│   │   ├── app.py                       # FastAPI app factory
-│   │   └── lifespan.py                  # Startup/shutdown lifecycle (engine lifecycle)
+│   │   ├── app.py
+│   │   └── lifespan.py
+│   ├── core/                          # V10.1 Pipeline Core
+│   │   ├── __init__.py
+│   │   ├── artifact.py                # Artifact[T], ErrorArtifact, ObjectiveResult
+│   │   ├── context.py                 # ExecutionContext, PipelineContext (split concerns)
+│   │   ├── dag.py                     # DAGExecutor, ExecutionResult, BudgetEnforcer
+│   │   └── orchestrator.py            # PipelineOrchestrator, StageDefinition
+│   ├── models/                        # V10.1 Data Models
+│   │   ├── __init__.py
+│   │   ├── data.py                    # 9 frozen data types
+│   │   ├── clip.py                    # ClipCandidate, PortfolioClip, Portfolio
+│   │   ├── reasoning.py               # Event, EventRole, Evidence, ClipHypothesis
+│   │   ├── evaluation.py              # EvaluationRecord, EvaluationLifecycle
+│   │   ├── feature.py
+│   │   ├── generation_state.py
+│   │   ├── graph.py
+│   │   ├── job.py
+│   │   ├── learning.py
+│   │   ├── segment.py
+│   │   ├── semantic.py
+│   │   ├── story.py
+│   │   ├── story_blueprint.py
+│   │   ├── topic_block.py
+│   │   └── transcript.py
+│   ├── config/                        # V10.1 Configuration
+│   │   ├── __init__.py
+│   │   ├── settings.py                # PipelineSettings (frozen)
+│   │   ├── budgets.py                 # StageBudget, STAGE_BUDGETS, check_budget()
+│   │   ├── runtime.yaml
+│   │   ├── thresholds.py
+│   │   ├── ranking_config.py
+│   │   ├── semantic_config.py
+│   │   └── worker_limits.py
+│   ├── services/                      # V10.1 Services
+│   │   ├── __init__.py
+│   │   ├── adaptive_windows.py        # AdaptiveWindowSplitter, WindowConfig
+│   │   ├── roles.py                   # DynamicRoleClassifier
+│   │   ├── snapshots.py               # PipelineSnapshotService, SnapshotV1
+│   │   ├── audio_service.py
+│   │   ├── whisper_manager.py
+│   │   ├── transcription_service.py
+│   │   ├── segmentation_service.py
+│   │   ├── feature_service.py
+│   │   ├── graph_service.py
+│   │   ├── scoring_service.py
+│   │   ├── embedding_service.py
+│   │   ├── embedding_clusterer.py
+│   │   ├── block_synopsis_generator.py
+│   │   ├── priority_ranker.py
+│   │   ├── transcript_summarizer.py
+│   │   ├── semantic_service.py
+│   │   ├── story_reasoner.py
+│   │   ├── story_detector.py
+│   │   ├── story_validator.py
+│   │   ├── coverage_analyzer.py
+│   │   ├── blueprint_generator.py
+│   │   ├── duplicate_guard.py
+│   │   ├── llm_provider.py
+│   │   ├── preview_service.py
+│   │   ├── rendering_service.py
+│   │   └── storage_service.py
+│   ├── strategies/                    # V10.1 Clip Strategies
+│   │   ├── __init__.py
+│   │   ├── base.py                    # ClipStrategy ABC
+│   │   └── builtin.py                 # Story, Hook, Reveal, Reaction, Opinion
+│   ├── objectives/                    # V10.1 Scoring Objectives
+│   │   ├── __init__.py
+│   │   ├── base.py                    # Objective ABC, ObjectiveMetadata
+│   │   ├── registry.py                # ObjectiveRegistry (DAG execution)
+│   │   └── builtin.py                 # 10 built-in objectives
+│   ├── graph/                         # V10.1 Graph
+│   │   ├── __init__.py
+│   │   ├── evidence.py                # EvidenceGraph (window flattening)
+│   │   └── persistent.py              # PersistentKnowledgeGraph
+│   ├── optimization/                  # V10.1 Optimization
+│   │   ├── __init__.py
+│   │   ├── narrative.py               # NarrativeOptimizer
+│   │   ├── portfolio.py               # PortfolioOptimizer, SimilarityProvider ABC
+│   │   └── deduplication.py           # CandidateDeduplicationService
+│   ├── evaluation/                    # V10.1 Evaluation
+│   │   ├── __init__.py
+│   │   └── layer.py                   # EvaluationLayer
 │   ├── api/
-│   │   ├── routes/
-│   │   │   ├── process.py               # POST /api/process
-│   │   │   ├── status.py                # GET /api/status/{job_id}
-│   │   │   ├── preview.py               # GET /api/preview/{job_id}
-│   │   │   └── export.py                # Result, retry, cancel, export, download
-│   │   └── middleware/
-│   │       ├── cors.py                  # CORS configuration
-│   │       ├── errors.py                # Global error handler
-│   │       └── logging.py               # Request timing
-│   ├── config/
-│   │   ├── settings.py                  # Settings dataclass + YAML loader
-│   │   ├── runtime.yaml                 # Runtime configuration
-│   │   ├── thresholds.py                # Scoring thresholds
-│   │   ├── ranking_config.py            # Ranking engine parameters
-│   │   ├── semantic_config.py           # Story quality weights, rejection thresholds
-│   │   └── worker_limits.py             # Worker pool limits
-│   ├── execution/                       # Execution Layer V2 (provider-agnostic engine)
-│   │   ├── __init__.py                  # Package exports
-│   │   ├── models.py                    # PromptBuilder, PromptContext, ExecutionRequest, etc.
-│   │   ├── provider_session.py          # ProviderSession, AsyncRateLimiter, Middleware
-│   │   ├── repository.py                # SegmentRepository (read-only data access)
-│   │   ├── engine.py                    # ExecutionEngine + PipelineExecutor
-│   │   └── profiler.py                  # Event-based profiling
-│   ├── models/
-│   │   ├── clip.py                      # ClipCandidate, PreviewManifest
-│   │   ├── feature.py                   # SegmentFeatures
-│   │   ├── generation_state.py          # BlueprintGenerationState, PipelineTiming
-│   │   ├── graph.py                     # KnowledgeGraph
-│   │   ├── job.py                       # JobStatus, JobRecord
-│   │   ├── learning.py                  # LearningEntry, AnalyticsSummary
-│   │   ├── segment.py                   # AtomicSegment
-│   │   ├── semantic.py                  # SegmentAnnotation, LLMStoryBoundary
-│   │   ├── story.py                     # StoryCandidate, Story, StoryCoverage
-│   │   ├── story_blueprint.py           # StoryBlueprint
-│   │   ├── topic_block.py               # TopicBlock, PriorityQueue, StoryBoundary
-│   │   └── transcript.py               # TranscriptChunk
-│   ├── services/
-│   │   ├── audio_service.py             # FFmpeg audio extraction
-│   │   ├── whisper_manager.py           # Faster-Whisper singleton (local transcription)
-│   │   ├── transcription_service.py     # Multi-provider transcription router
-│   │   ├── segmentation_service.py      # Atomic segment creation
-│   │   ├── feature_service.py           # Multi-signal feature extraction
-│   │   ├── graph_service.py             # Knowledge graph construction
-│   │   ├── scoring_service.py           # Candidate scoring
-│   │   ├── embedding_service.py         # TF-IDF + sentence-transformers
-│   │   ├── embedding_clusterer.py       # Topic block clustering
-│   │   ├── block_synopsis_generator.py  # Deterministic block synopses
-│   │   ├── priority_ranker.py           # Block priority ranking
-│   │   ├── transcript_summarizer.py     # Structured video summary (PromptBuilder + create_request)
-│   │   ├── semantic_service.py          # Pass 1: segment annotation (PromptBuilder + create_requests)
-│   │   ├── story_reasoner.py            # Pass 2: story boundary detection (PromptBuilder + create_requests)
-│   │   ├── story_detector.py            # Candidate formation + repair
-│   │   ├── story_validator.py           # Quality scoring + rejection
-│   │   ├── coverage_analyzer.py         # Segment coverage analysis
-│   │   ├── blueprint_generator.py       # Story-to-blueprint conversion
-│   │   ├── duplicate_guard.py           # Composite duplicate detection
-│   │   ├── llm_provider.py              # Groq/Gemini/Rule-based LLM providers + ProviderRouter + estimate_tokens()
-│   │   ├── preview_service.py           # Preview manifest building
-│   │   ├── rendering_service.py         # FFmpeg clip rendering
-│   │   └── storage_service.py           # File storage helpers
-│   ├── pipelines/
-│   │   ├── production_pipeline.py       # Main pipeline (uses ExecutionEngine + PipelineExecutor)
-│   │   ├── orchestrator.py              # Job orchestration (accepts engine parameter)
-│   │   ├── analytics_pipeline.py        # Analytics summarization
-│   │   ├── learning_pipeline.py         # Background learning
-│   │   └── event_bus.py                 # Pipeline event system (with subscribers)
+│   │   └── routes/
+│   ├── execution/                     # Execution Layer V2
+│   │   ├── models.py
+│   │   ├── provider_session.py
+│   │   ├── repository.py
+│   │   ├── engine.py
+│   │   └── profiler.py
 │   ├── ranking/
-│   │   ├── pipeline.py                  # RankingEngine (13-stage)
-│   │   ├── models.py                    # Candidate, RankedClip, RankingResult
-│   │   ├── hard_constraints.py          # Duration, order, gap filtering
-│   │   ├── narrative.py                 # Semantic coherence
-│   │   ├── context.py                   # Contextual coherence
-│   │   ├── hook_quality.py              # Hook effectiveness
-│   │   ├── density.py                   # Information density
-│   │   ├── retention.py                 # Viewer retention prediction
-│   │   ├── novelty.py                   # Semantic deduplication
-│   │   ├── tie_breaker.py              # Tie-breaking logic
-│   │   ├── confidence.py               # Confidence scoring
-│   │   ├── explanation.py              # Human-readable explanations
-│   │   └── optimizer.py                # MMR optimization
-│   ├── storage/
-│   │   ├── file_store.py                # JSON file persistence
-│   │   ├── job_store.py                 # Job state management
-│   │   ├── manifest_store.py            # Preview manifest storage
-│   │   └── state_store.py              # State persistence
+│   │   ├── pipeline.py
+│   │   ├── models.py
+│   │   └── *.py
 │   ├── workers/
-│   │   ├── scheduler.py                 # Task scheduling
-│   │   ├── worker_pool.py               # Async worker pool
-│   │   ├── transcription_worker.py      # Transcription workers
-│   │   ├── feature_worker.py            # Feature extraction workers
-│   │   ├── clip_worker.py               # Clip rendering workers
-│   │   └── learning_worker.py           # Learning workers
-│   ├── utils/
-│   │   ├── text_utils.py                # Text processing
-│   │   ├── audio_utils.py               # Audio utilities
-│   │   ├── time_utils.py                # Time formatting
-│   │   ├── validation.py                # Input validation
-│   │   └── logging.py                   # Logging configuration
-│   └── tests/                           # 21 test files (150 tests)
+│   │   ├── scheduler.py
+│   │   ├── worker_pool.py
+│   │   └── *_worker.py
+│   ├── storage/
+│   │   ├── file_store.py
+│   │   ├── job_store.py
+│   │   └── state_store.py
+│   ├── pipelines/
+│   │   ├── production_pipeline.py
+│   │   ├── orchestrator.py
+│   │   └── event_bus.py
+│   ├── contracts/
+│   │   └── module_contracts.md
+│   ├── tests/                         # 181 tests
+│   │   ├── test_strategies.py         # 7 tests
+│   │   ├── test_objectives.py         # 13 tests
+│   │   ├── test_deduplication.py      # 6 tests
+│   │   ├── test_evaluation.py         # 4 tests
+│   │   ├── test_integration.py        # 2 tests (full pipeline)
+│   │   └── unit/                      # ~149 existing tests
+│   └── utils/
 ├── frontend/
 │   └── src/
-│       ├── app/                         # App shell, router
-│       ├── pages/                       # 5 page components
-│       ├── components/                  # Reusable UI components
-│       ├── hooks/                       # Custom React hooks
-│       ├── services/                    # API client services
-│       ├── store/                       # Zustand state management
-│       ├── styles/                      # Tailwind + theme CSS
-│       └── types/                       # TypeScript types
-├── shared/                              # Shared schemas, contracts
-├── docker/                              # Dockerfiles
-├── storage/                             # Runtime job data (gitignored)
+│       ├── app/
+│       ├── pages/
+│       ├── components/
+│       ├── hooks/
+│       ├── services/
+│       ├── store/
+│       ├── styles/
+│       └── types/
+├── shared/
+├── docker/
+├── storage/
 ├── docker-compose.yml
-├── start.bat                            # Windows launcher
-└── .env.example                         # Environment template
+├── start.bat
+├── smoke_test.py                      # Full pipeline smoke test
+└── .env.example
 ```
 
 ---
 
 ## Production Pipeline
 
-The pipeline processes videos through sequential stages with cancellation checks and error handling between each stage. LLM calls (Summary, Pass 1, Pass 2) are executed through the **Execution Layer V2** for parallel execution.
+The pipeline processes videos through sequential stages with automatic budget enforcement, deterministic artifact tracking, and error handling between each stage.
 
 ```mermaid
 flowchart TB
-    START([Start]) --> CHK{FFmpeg installed?}
-    CHK -->|No| FAIL1[Fail: ffmpeg not found]
-    CHK -->|Yes| EXT[Extract Audio]
+    START(["Start"]) --> CHK{"FFmpeg installed?"}
+    CHK -->|"No"| FAIL1["Fail: ffmpeg not found"]
+    CHK -->|"Yes"| EXT["Extract Audio"]
 
-    EXT --> PLAN[Plan Chunks]
-    PLAN --> SPLIT[Split Audio Chunks]
+    EXT --> PLAN["Plan Chunks"]
+    PLAN --> SPLIT["Split Audio Chunks"]
 
-    SPLIT --> TRANS[Parallel Transcription]
-    TRANS --> RATE{Rate Limit}
-    RATE -->|Groq| GROQ_CALL[Groq API]
-    RATE -->|Fallback| GEMINI_CALL[Gemini API]
+    SPLIT --> TRANS["Parallel Transcription"]
+    TRANS --> RATE{"Rate Limit"}
+    RATE -->|"Groq"| GROQ_CALL["Groq API"]
+    RATE -->|"Fallback"| GEMINI_CALL["Gemini API"]
 
-    GROQ_CALL --> MERGE[Merge Transcripts]
+    GROQ_CALL --> MERGE["Merge Transcripts"]
     GEMINI_CALL --> MERGE
 
-    MERGE --> SEG[Atomic Segmentation]
-    SEG --> FEAT[Feature Extraction]
-    FEAT --> GRAPH[Knowledge Graph]
+    MERGE --> SEG["Atomic Segmentation"]
+    SEG --> FEAT["Feature Extraction"]
+    FEAT --> GRAPH["Knowledge Graph"]
 
-    GRAPH --> EMB["Embedding Clustering\n(sentence-transformers)"]
+    GRAPH --> EMB["Embedding Clustering"]
     EMB --> BLOCKS["Topic Blocks"]
-    BLOCKS --> SYN[Block Synopses]
-    SYN --> PRI[Priority Queue]
+    BLOCKS --> SYN["Block Synopses"]
 
-    BLOCKS --> EXEC_LAYER["Execution Layer V2\n(async parallel)"]
-    EXEC_LAYER --> ROUTER2["ProviderRouter\n(round-robin across keys)"]
-    ROUTER2 --> SUM["Structured Summary\n(1 LLM call)"]
-    SUM --> P1["Pass 1: Segment Annotation\n(block-based parallel batches)"]
-    P1 --> P2["Pass 2: Story Reasoning\n(block-based parallel)"]
+    BLOCKS --> EXEC_LAYER["Execution Layer V2"]
+    EXEC_LAYER --> ROUTER2["ProviderRouter"]
+    ROUTER2 --> SUM["Structured Summary"]
+    SUM --> P1["Pass 1: Segment Annotation"]
+    P1 --> P2["Pass 2: Story Reasoning"]
 
-    P2 --> DET[Story Detection]
-    DET --> REPAIR[Story Repair]
-    REPAIR --> VALID[Story Validation]
-    VALID --> COV[Coverage Analysis]
-    COV --> BLUE[Blueprint Generation]
+    P2 --> DET["Story Detection"]
+    DET --> REPAIR["Story Repair"]
+    REPAIR --> VALID["Story Validation"]
+    VALID --> COV["Coverage Analysis"]
+    COV --> BLUE["Blueprint Generation"]
 
-    BLUE --> SCORE[Scoring & Candidates]
-    SCORE --> RANK[Multi-Stage Ranking]
-    RANK --> OPT[MMR Optimization]
+    BLUE --> STRAT["Strategy Execution\n5 strategies"]
+    STRAT --> DEDUP["Candidate Deduplication"]
+    DEDUP --> OBJ["Objective Scoring\n10 objectives"]
+    OBJ --> NARR["Narrative Optimization"]
+    NARR --> PORT["Portfolio Optimization\nMMR + diversity"]
+    PORT --> EVAL["Evaluation Recording"]
 
-    OPT --> PREV[Preview Manifest]
-    PREV --> EXPORT[Render MP4]
-    EXPORT --> LEARN[Analytics & Learning]
-    LEARN --> DONE([Complete])
+    EVAL --> PREV["Preview Manifest"]
+    PREV --> EXPORT["Render MP4"]
+    EXPORT --> LEARN["Analytics & Learning"]
+    LEARN --> DONE(["Complete"])
 
-    EXT -->|Error| FAIL2[Fail: extraction error]
-    TRANS -->|Error| FAIL3[Fail: transcription error]
+    EXT -->|"Error"| FAIL2["Fail: extraction error"]
+    TRANS -->|"Error"| FAIL3["Fail: transcription error"]
 
     style START fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
     style DONE fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
     style FAIL1 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
     style FAIL2 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
     style FAIL3 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
-    style EMB fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
-    style BLOCKS fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
-    style EXEC_LAYER fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
-    style ROUTER2 fill:#06b6d4,color:#fff,stroke:#0891b2,stroke-width:2px
-    style SUM fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
-    style P1 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
-    style P2 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
+    style STRAT fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
+    style DEDUP fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
+    style OBJ fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
+    style NARR fill:#06b6d4,color:#fff,stroke:#0891b2,stroke-width:2px
+    style PORT fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
+    style EVAL fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
 ```
 
 ### Pipeline Stages
 
-| # | Stage | Status | Progress | Description |
-|---|---|---|---|---|
-| 1 | FFmpeg Check | - | - | Verify ffmpeg/ffprobe are installed |
-| 2 | Audio Extraction | `extracting_audio` | 5% | Extract audio as OGG/Opus via FFmpeg |
-| 3 | Chunk Planning | `chunking` | 10% | Calculate adaptive chunk sizes |
-| 4 | Chunk Splitting | `chunking` | 10-20% | Split audio into chunk files |
-| 5 | Transcription | `transcribing` | 20-45% | Parallel transcription via Groq/Gemini |
-| 6 | Merge | `merging` | 45% | Deduplicate and merge transcripts |
-| 7 | Segmentation | `segmenting` | 58% | Split into atomic segments, classify hooks/body/endings |
-| 8 | Feature Extraction | `analyzing` | 70% | Compute audio energy, text density, structure, patterns |
-| 9 | Embedding Clustering | `analyzing` | 70% | Group segments into topic blocks |
-| 10 | Block Synopses | `analyzing` | 71% | Generate deterministic synopses per block |
-| 11 | Structured Summary | `analyzing` | 72% | Global video summary (via Execution Layer) |
-| 12 | Pass 1 | `analyzing` | 73% | Segment annotation (parallel batches via Execution Layer) |
-| 13 | Pass 2 | `analyzing` | 74% | Story boundary detection (parallel via Execution Layer) |
-| 14 | Story Detection | `analyzing` | 75% | Candidate formation and repair |
-| 15 | Story Validation | `analyzing` | 78% | Quality scoring and rejection |
-| 16 | Blueprint Generation | `analyzing` | 80% | Story-to-blueprint conversion |
-| 17 | Scoring | `scoring` | 80% | Generate and score clip candidates |
-| 18 | Ranking | `scoring` | 80% | Multi-stage ranking with MMR optimization |
-| 19 | Preview | `preview_ready` | 90% | Build preview manifest |
-| 20 | Export | `export_ready` | 95% | Render top clip as MP4 |
-| 21 | Learning | `complete` | 100% | Save analytics and learning data |
+| # | Stage | Budget | Description |
+|---|---|---|---|
+| 1 | FFmpeg Check | - | Verify ffmpeg/ffprobe are installed |
+| 2 | Audio Extraction | - | Extract audio as OGG/Opus via FFmpeg |
+| 3 | Chunk Planning | - | Calculate adaptive chunk sizes |
+| 4 | Chunk Splitting | - | Split audio into chunk files |
+| 5 | Transcription | - | Parallel transcription via Groq/Gemini |
+| 6 | Merge | - | Deduplicate and merge transcripts |
+| 7 | Segmentation | - | Split into atomic segments |
+| 8 | Feature Extraction | - | Compute audio energy, text density, structure |
+| 9 | Adaptive Windows | 100ms | Split into duration-based windows |
+| 10 | Signal Extraction | 200ms | Extract audio/text signals |
+| 11 | Evidence Compilation | 500ms | Build evidence graph |
+| 12 | Graph Construction | 300ms | Build knowledge graph |
+| 13 | Role Classification | 150ms | Hook/body/ending classification |
+| 14 | Embedding Clustering | - | Group segments into topic blocks |
+| 15 | Block Synopses | - | Generate deterministic synopses |
+| 16 | Structured Summary | - | Global video summary via LLM |
+| 17 | Pass 1 | - | Segment annotation (parallel batches) |
+| 18 | Pass 2 | - | Story boundary detection (parallel) |
+| 19 | Story Detection | - | Candidate formation and repair |
+| 20 | Story Validation | - | Quality scoring and rejection |
+| 21 | Blueprint Generation | - | Story-to-blueprint conversion |
+| 22 | Strategy Execution | 1000ms | Run 5 clip strategies |
+| 23 | Candidate Deduplication | 100ms | Similarity-based dedup |
+| 24 | Objective Scoring | 2000ms | Score with 10 objectives (DAG order) |
+| 25 | Narrative Optimization | 200ms | Sort for narrative flow |
+| 26 | Portfolio Optimization | 200ms | MMR + diversity selection |
+| 27 | Evaluation Recording | 50ms | Save evaluation records |
+| 28 | Multi-Stage Ranking | - | 11-stage ranking engine |
+| 29 | Preview | - | Build preview manifest |
+| 30 | Export | - | Render top clip as MP4 |
+| 31 | Learning | - | Save analytics and learning data |
 
 ---
 
@@ -771,8 +816,8 @@ Content-Type: multipart/form-data
 ```
 
 **Errors:**
-- `400` - Invalid file type or empty file
-- `413` - File too large (over 2 GB)
+- `400` — Invalid file type or empty file
+- `413` — File too large (over 2 GB)
 
 ---
 
@@ -804,7 +849,7 @@ GET /api/status/{job_id}
 ```
 
 **Errors:**
-- `404` - Job not found
+- `404` — Job not found
 
 ---
 
@@ -836,19 +881,11 @@ GET /api/preview/{job_id}
       "ending_end": 52.3,
       "duration": 39.8,
       "total_score": 0.82,
-      "status": "ready",
-      "transcript_snippet": "Did you know that most people...",
-      "hook_score": 0.9,
-      "body_score": 0.75,
-      "ending_score": 0.7,
-      "flow_score": 0.85
+      "status": "ready"
     }
   ]
 }
 ```
-
-**Errors:**
-- `404` - Preview not ready or job not found
 
 ---
 
@@ -937,7 +974,7 @@ Downloads the rendered MP4 file.
 **Filename:** `trimora_reel_001.mp4`
 
 **Errors:**
-- `404` - Export not found
+- `404` — Export not found
 
 ---
 
@@ -957,12 +994,12 @@ sequenceDiagram
     F->>A: POST /api/process (multipart)
     A->>S: Create job directory
     A->>O: start_job(job_id)
-    A-->>F: { job_id, status: "uploaded" }
+    A-->>F: job_id, status: uploaded
 
     loop Every 2.5s
         F->>A: GET /api/status/{job_id}
         A->>S: Read state.json
-        A-->>F: { status, progress }
+        A-->>F: status, progress
     end
 
     O->>P: run(job_id)
@@ -1007,36 +1044,36 @@ Trimora implements graceful degradation at multiple levels.
 ```mermaid
 flowchart TD
     START["Transcription Request"] --> PROVIDER{"Provider Setting"}
-    
-    PROVIDER -->|faster-whisper| WHISPER{"WhisperManager\n(model loaded?)"}
-    WHISPER -->|Yes| LOCAL["Local Inference\n(CPU/GPU)"]
-    WHISPER -->|No| LOAD["Load Model"]
+
+    PROVIDER -->|"faster-whisper"| WHISPER{"WhisperManager\nmodel loaded?"}
+    WHISPER -->|"Yes"| LOCAL["Local Inference\nCPU/GPU"]
+    WHISPER -->|"No"| LOAD["Load Model"]
     LOAD --> LOCAL
-    
-    PROVIDER -->|groq| GROQ{"Groq API Key set?"}
-    GROQ -->|Yes| GROQ_CLIENT["Groq Client"]
-    GROQ -->|No| GEMINI{"Gemini API Key set?"}
-    
-    PROVIDER -->|gemini| GEMINI
-    
-    GEMINI -->|Yes| GEMINI_CLIENT["Gemini Client"]
-    GEMINI -->|No| STUB["Stub Transcription"]
-    
+
+    PROVIDER -->|"groq"| GROQ{"Groq API Key set?"}
+    GROQ -->|"Yes"| GROQ_CLIENT["Groq Client"]
+    GROQ -->|"No"| GEMINI{"Gemini API Key set?"}
+
+    PROVIDER -->|"gemini"| GEMINI
+
+    GEMINI -->|"Yes"| GEMINI_CLIENT["Gemini Client"]
+    GEMINI -->|"No"| STUB["Stub Transcription"]
+
     GROQ_CLIENT --> RATE{"Rate Limiter"}
-    RATE -->|Under limit| GROQ_CALL["Groq API Call"]
-    RATE -->|Wait| RATE
-    
-    GROQ_CALL -->|Success| RESULT["Transcription Result"]
-    GROQ_CALL -->|429 Rate Limit| RETRY["Auto-retry with backoff"]
+    RATE -->|"Under limit"| GROQ_CALL["Groq API Call"]
+    RATE -->|"Wait"| RATE
+
+    GROQ_CALL -->|"Success"| RESULT["Transcription Result"]
+    GROQ_CALL -->|"429 Rate Limit"| RETRY["Auto-retry with backoff"]
     RETRY --> RATE
-    
+
     GEMINI_CLIENT --> GEMINI_CALL["Gemini API Call"]
-    GEMINI_CALL -->|Success| RESULT
-    GEMINI_CALL -->|Error| STUB
-    
+    GEMINI_CALL -->|"Success"| RESULT
+    GEMINI_CALL -->|"Error"| STUB
+
     LOCAL --> RESULT
     STUB --> RESULT
-    
+
     style START fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
     style PROVIDER fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
     style WHISPER fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
@@ -1051,7 +1088,7 @@ flowchart TD
 
 | Priority | Provider | Model | Fallback Trigger |
 |---|---|---|---|
-| 1 (Primary) | Faster-Whisper | tiny/base/small/medium/large-v3 (auto-selected) | Model not installed, GPU unavailable |
+| 1 (Primary) | Faster-Whisper | auto (tiny → large-v3) | Model not installed, GPU unavailable |
 | 2 (Fallback) | Groq | whisper-large-v3-turbo | API key missing, rate limit exceeded |
 | 3 (Fallback) | Gemini | gemini-2.0-flash | API key missing, API error |
 | 4 (Stub) | Local | Generated text | No API keys configured |
@@ -1073,30 +1110,24 @@ flowchart TD
 
 #### ProviderRouter (Multi-Key Load Balancing)
 
-When multiple Groq API keys are configured, `ProviderRouter` distributes requests using thread-safe round-robin:
-
 ```mermaid
 flowchart TB
-    REQ["LLM Request"] --> PS["ProviderSession\n(rate limiter)"]
-    PS --> ROUTER["ProviderRouter\n(thread-safe round-robin)"]
-    
+    REQ["LLM Request"] --> PS["ProviderSession\nrate limiter"]
+    PS --> ROUTER["ProviderRouter\nthread-safe round-robin"]
+
     subgraph Buckets ["Per-Instance Token Buckets"]
-        ROUTER --> B1["TokenBucket\ngroq-1\n5,500 tok/60s"]
-        ROUTER --> B2["TokenBucket\ngroq-2\n5,500 tok/60s"]
-        ROUTER --> B3["TokenBucket\ngroq-3\n5,500 tok/60s"]
-        ROUTER --> B4["TokenBucket\ngemini\n30,000 tok/60s"]
+        ROUTER --> B1["TokenBucket\ngroq-1\n5500 tok/60s"]
+        ROUTER --> B2["TokenBucket\ngroq-2\n5500 tok/60s"]
+        ROUTER --> B3["TokenBucket\ngroq-3\n5500 tok/60s"]
+        ROUTER --> B4["TokenBucket\ngemini\n30000 tok/60s"]
     end
-    
+
     B1 --> G1["Groq API\nwhisper + Llama"]
     B2 --> G1
     B3 --> G1
     B4 --> G2["Gemini API\nflash"]
 
     style ROUTER fill:#06b6d4,color:#fff,stroke:#0891b2,stroke-width:2px
-    style B1 fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:1px
-    style B2 fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:1px
-    style B3 fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:1px
-    style B4 fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:1px
 ```
 
 **Configuration** — each key on its own line in `.env`:
@@ -1106,72 +1137,6 @@ GROQ_API_KEY_2=gsk_def456...
 GROQ_API_KEY_3=gsk_ghi789...
 GEMINI_API_KEY=AIza...
 ```
-
-**Behavior:**
-- Cycles: `groq-1 → groq-2 → groq-3 → gemini → groq-1 → ...`
-- Each provider gets its own `TokenBucket` (per-instance, not global)
-- Implements `LLMProvider` interface — zero changes needed to `ExecutionEngine`, `ProviderSession`, or any service
-- Thread-safe via `threading.Lock`
-
-> All LLM calls go through `ProviderSession` which handles rate limiting, token estimation, and middleware. The `ExecutionEngine` classifies errors as retryable or non-retryable using `_is_retryable()`.
-
----
-
-## Transcription Performance Monitoring
-
-Trimora includes built-in performance monitoring for transcription with per-chunk timing and RTF (Real-Time Factor) logging.
-
-### What Gets Logged
-
-At job start:
-```
-Transcription config: provider=faster-whisper model=small device=cpu compute=int8 workers=1 beam_size=5 vad=enabled language=auto cpu_cores=8
-```
-
-After first chunk:
-```
-Language detected: hi (caching for job 317762d3-86e3-460e-8dac-bc54961e304e)
-```
-
-Per-chunk timing:
-```
-Chunk 317762d3_chunk_0 [44.0s]: split=555ms infer=134948ms assembly=0ms total=135503ms RTF=3.08
-```
-
-Job summary:
-```
-Transcription summary: chunks=5 avg_rtf=0.91 peak_rtf=1.08 avg_chunk_duration=44.0s total_inference=198.5s total_audio=220.0s
-```
-
-### RTF (Real-Time Factor)
-
-RTF measures transcription speed relative to audio duration:
-
-```
-RTF = processing_time / audio_duration
-```
-
-| RTF | Meaning |
-|---|---|
-| < 0.5 | Faster than real-time (excellent) |
-| 0.5 - 1.0 | Near real-time (good) |
-| 1.0 - 2.0 | Slower than real-time (acceptable for non-interactive) |
-| > 2.0 | Significantly slower (needs optimization) |
-
-### Per-Job Language Caching
-
-Language detection runs only on the first chunk of each job. Subsequent chunks reuse the cached language, eliminating redundant detection overhead.
-
-### Performance Targets
-
-| Stage | Target (GPU) | Target (CPU) |
-|---|---|---|
-| Audio extraction | < 5s | < 5s |
-| Transcription | 10-30s | 30-60s |
-| Semantic analysis | 10-20s | 10-20s |
-| Story generation | 5-10s | 5-10s |
-| Rendering | 10-20s | 10-20s |
-| **Total** | **< 60s** | **< 2 min** |
 
 ---
 
@@ -1228,8 +1193,6 @@ total_score = hook_score * 0.35 + body_score * 0.25 + ending_score * 0.20 + flow
 
 ### Segment Classification
 
-Segments are classified into three types using regex patterns and positional heuristics:
-
 | Type | Detection Method | Example Patterns |
 |---|---|---|
 | **Hook** | First sentence + pattern match | "What if...", "Did you know...", "Imagine..." |
@@ -1258,12 +1221,12 @@ flowchart TB
         UI["uiStore - Theme"]
     end
 
-    UP -->|Upload| JS
-    JS -->|Poll /api/status| SP
-    JS -->|Fetch /api/preview| PP
-    PP -->|Select clips| PS
-    PP -->|Download| RP
-    SET -->|Configure| UI
+    UP -->|"Upload"| JS
+    JS -->|"Poll /api/status"| SP
+    JS -->|"Fetch /api/preview"| PP
+    PP -->|"Select clips"| PS
+    PP -->|"Download"| RP
+    SET -->|"Configure"| UI
 ```
 
 ### Pages
@@ -1306,16 +1269,16 @@ TRIMORA_MAX_CHUNK_SECONDS=120
 TRIMORA_OVERLAP_SECONDS=2
 
 # Transcription
-TRIMORA_TRANSCRIPTION_PROVIDER=faster-whisper  # Options: faster-whisper, groq, gemini, stub
+TRIMORA_TRANSCRIPTION_PROVIDER=faster-whisper
 TRIMORA_TRANSCRIPTION_TIMEOUT=600
 
 # Local Transcription (Faster-Whisper)
-WHISPER_MODEL_SIZE=auto         # Options: tiny, base, small, medium, large-v3, large-v3-turbo, auto
-WHISPER_DEVICE=cuda             # Options: cuda (GPU required), cpu
-WHISPER_COMPUTE_TYPE=auto       # Options: int8, float16, auto
-WHISPER_BEAM_SIZE=5             # Higher = better quality but slower
-WHISPER_VAD_FILTER=true         # Voice Activity Detection
-WHISPER_LANGUAGE=null           # Auto-detect, or set to "en", "hi", etc.
+WHISPER_MODEL_SIZE=auto
+WHISPER_DEVICE=cuda
+WHISPER_COMPUTE_TYPE=auto
+WHISPER_BEAM_SIZE=5
+WHISPER_VAD_FILTER=true
+WHISPER_LANGUAGE=null
 
 # CORS
 TRIMORA_CORS_ORIGINS=*
@@ -1324,15 +1287,15 @@ TRIMORA_CORS_ORIGINS=*
 VITE_API_BASE_URL=http://localhost:8000
 
 # API Keys (required for cloud transcription)
-GROQ_API_KEY_1=gsk_...        # Primary Groq key
-GROQ_API_KEY_2=gsk_...        # Additional Groq keys (optional)
+GROQ_API_KEY_1=gsk_...
+GROQ_API_KEY_2=gsk_...
 GROQ_API_KEY_3=gsk_...
-GEMINI_API_KEY=AIza...        # Fallback provider
+GEMINI_API_KEY=AIza...
 ```
 
 ### Runtime Configuration
 
-Settings are loaded in order: defaults -> `runtime.yaml` -> environment variables.
+Settings are loaded in order: defaults → `runtime.yaml` → environment variables.
 
 ```yaml
 # backend/config/runtime.yaml
@@ -1354,18 +1317,18 @@ storage:
 
 job:
   retry_count: 3
-  transcription_provider: "faster-whisper"  # Options: faster-whisper, groq, gemini, stub
+  transcription_provider: "faster-whisper"
   transcription_timeout_seconds: 600
   export_timeout_seconds: 600
 
 whisper:
-  model_size: "auto"           # tiny, base, small, medium, large-v3, large-v3-turbo, auto
-  device: "cuda"               # cuda (GPU required), cpu
-  compute_type: "auto"         # int8, float16, auto
-  beam_size: 5                 # Higher = better quality but slower
-  language: null               # Auto-detect, or set language code
-  vad_filter: true             # Voice Activity Detection
-  vad_min_silence_ms: 500      # Minimum silence duration for VAD
+  model_size: "auto"
+  device: "cuda"
+  compute_type: "auto"
+  beam_size: 5
+  language: null
+  vad_filter: true
+  vad_min_silence_ms: 500
 
 thresholds:
   min_segment_seconds: 1.2
@@ -1377,30 +1340,6 @@ semantic:
   context_overlap: 2
   batch_delay_seconds: 0.0
 ```
-
-### Embedding Configuration
-
-```python
-# backend/config/settings.py (defaults)
-embedding_min_window = 3          # Min segments per block
-embedding_target_window = 5       # Target segments per block
-embedding_max_window = 7          # Max segments per block
-embedding_max_duration = 60.0     # Max block duration (seconds)
-embedding_max_tokens = 2000       # Max tokens per block
-embedding_smoothing_window = 3    # Local smoothing window
-embedding_threshold_std = 1.5     # Z-score threshold for boundaries
-embedding_z_score_max_std = 3.0   # Cap for z-score normalization
-```
-
-### Adaptive Chunking
-
-Chunk sizes adapt to video duration:
-
-| Video Length | Chunk Size | Workers | Overlap |
-|---|---|---|---|
-| < 10 minutes | 30s | 3 | 2s |
-| 10 min - 1 hour | 45s | 5 | 2s |
-| > 1 hour | 90s | 5 | 2s |
 
 ---
 
@@ -1416,15 +1355,10 @@ Chunk sizes adapt to video duration:
 ### Quick Start (Windows)
 
 ```bash
-# Clone the repository
 git clone https://github.com/yourusername/trimora.git
 cd trimora
-
-# Copy and configure environment
 copy .env.example .env
 # Edit .env with your API keys
-
-# Run the launcher
 start.bat
 ```
 
@@ -1452,51 +1386,28 @@ npm run dev
 
 ### Transcription Setup
 
-Trimora supports both local and cloud transcription:
-
 #### Local Transcription (Faster-Whisper)
 
 No API keys required. Faster-Whisper runs locally on your machine with GPU acceleration.
 
 ```bash
-# Install faster-whisper with CUDA support
 pip install faster-whisper
-
-# Configure in .env (GPU is default)
 TRIMORA_TRANSCRIPTION_PROVIDER=faster-whisper
-WHISPER_MODEL_SIZE=auto         # Auto-selects based on available VRAM
-WHISPER_DEVICE=cuda             # GPU required (fails if unavailable)
-WHISPER_COMPUTE_TYPE=auto       # float16 for GPU
+WHISPER_MODEL_SIZE=auto
+WHISPER_DEVICE=cuda
+WHISPER_COMPUTE_TYPE=auto
 ```
-
-**Model Selection (auto mode with 4GB VRAM):**
-
-| VRAM | Model | Compute Type | Expected RTF |
-|---|---|---|---|
-| >= 3GB | large-v3 | float16 | 0.1-0.3 |
-| >= 1.7GB | large-v3-turbo | float16 | 0.1-0.2 |
-| >= 1.6GB | medium | float16 | 0.1-0.2 |
-| >= 0.6GB | small | int8 | 0.2-0.4 |
-
-> **Note:** With a GTX 1650 (4GB VRAM), auto mode will select `large-v3` for best quality.
 
 #### Cloud Transcription (Groq/Gemini)
 
 Requires API keys. Faster than local on CPU, but requires internet connection.
 
 ```bash
-# Get API keys
-# Groq: https://console.groq.com (free tier available)
-# Gemini: https://aistudio.google.com (free tier available)
-
-# Configure in .env
 TRIMORA_TRANSCRIPTION_PROVIDER=groq
-GROQ_API_KEY_1=gsk_...        # Primary
-GROQ_API_KEY_2=gsk_...        # Optional: enables round-robin
-GEMINI_API_KEY=AIza...        # Fallback
+GROQ_API_KEY_1=gsk_...
+GROQ_API_KEY_2=gsk_...
+GEMINI_API_KEY=AIza...
 ```
-
-> `ProviderRouter` automatically detects multiple keys and round-robins across them. Each key gets its own rate limiter (5,500 tokens/60s for Groq, 30,000 tokens/60s for Gemini).
 
 ---
 
@@ -1520,8 +1431,8 @@ docker-compose up --build
 
 ### Dockerfiles
 
-- `docker/Dockerfile.backend` - Python 3.11-slim + FFmpeg
-- `docker/Dockerfile.frontend` - Multi-stage: Node 20 build + Nginx serve
+- `docker/Dockerfile.backend` — Python 3.11-slim + FFmpeg
+- `docker/Dockerfile.frontend` — Multi-stage: Node 20 build + Nginx serve
 
 ---
 
@@ -1531,100 +1442,93 @@ Each job is self-contained in `storage/jobs/{job_id}/`:
 
 ```text
 storage/jobs/{job_id}/
-├── input/                          # Uploaded video file
+├── input/
 ├── audio/
-│   ├── audio.opus                  # Extracted audio
-│   └── chunks/                     # Split audio chunks
+│   ├── audio.opus
+│   └── chunks/
 ├── transcript/
-│   ├── transcript.json             # Merged transcript
-│   └── words.json                  # Per-chunk transcripts
+│   ├── transcript.json
+│   └── words.json
 ├── segments/
-│   └── atomic_segments.json        # Atomic segments
+│   └── atomic_segments.json
 ├── features/
-│   └── feature_vectors.json        # Multi-signal features
+│   └── feature_vectors.json
 ├── graph/
-│   └── local_graph.json            # Knowledge graph
+│   └── local_graph.json
 ├── semantic/
-│   ├── segment_embeddings.json     # Segment embeddings (persisted)
-│   ├── topic_blocks.json           # Embedding-clustered topic blocks
-│   ├── block_synopses.json         # Deterministic block synopses
-│   ├── block_embeddings.json       # Block-level embeddings (persisted)
-│   ├── priority_queue.json         # Block priority ranking
-│   ├── summary.json                # Structured video summary
-│   ├── segment_annotations.json    # Pass 1 annotations
-│   ├── pass1_checkpoint.jsonl      # Pass 1 checkpoint
-│   ├── pass1_raw.json              # Pass 1 raw LLM output
-│   ├── pass2_checkpoint.jsonl      # Pass 2 checkpoint
-│   └── pass2_raw.json              # Pass 2 raw LLM output
+│   ├── segment_embeddings.json
+│   ├── topic_blocks.json
+│   ├── block_synopses.json
+│   ├── block_embeddings.json
+│   ├── priority_queue.json
+│   ├── summary.json
+│   ├── segment_annotations.json
+│   ├── pass1_checkpoint.jsonl
+│   ├── pass1_raw.json
+│   ├── pass2_checkpoint.jsonl
+│   └── pass2_raw.json
 ├── stories/
-│   ├── story_candidates.json       # Formed story candidates
-│   └── validated_stories.json      # Validated + rejected stories
+│   ├── story_candidates.json
+│   └── validated_stories.json
 ├── clips/
-│   ├── candidates.json             # Scored clip candidates
-│   ├── story_blueprints.json       # Story-to-blueprint conversion
-│   ├── ranked_clips.json           # Ranked clips
-│   ├── preview_manifest.json       # Preview manifest
-│   └── generation_state.json       # Full generation state
+│   ├── candidates.json
+│   ├── story_blueprints.json
+│   ├── ranked_clips.json
+│   ├── preview_manifest.json
+│   └── generation_state.json
+├── evaluations/
+│   └── eval_*.json
+├── snapshots/
+│   └── *.json
 ├── learning/
-│   ├── labels.json
-│   ├── decision_log.json
-│   ├── patterns.json
-│   └── failures.json
 ├── analytics/
-│   └── statistics.json
 ├── exports/
 │   └── reel_001.mp4
-├── state.json                      # Job state
-└── metadata.json                   # Job metadata
+├── state.json
+└── metadata.json
 ```
-
-### Data Models
-
-| Model | File | Fields |
-|---|---|---|
-| JobRecord | `state.json` | job_id, status, progress, created_at, error, stats |
-| TranscriptChunk | `words.json` | chunk_id, start, end, text, confidence |
-| AtomicSegment | `atomic_segments.json` | id, start, end, text, kind, order |
-| SegmentFeatures | `feature_vectors.json` | segment_id, audio_intensity, text_density, structure_score |
-| TopicBlock | `topic_blocks.json` | segments, start, end, original_block_index, structural_confidence |
-| SegmentAnnotation | `segment_annotations.json` | segment_id, topic, story_role, emotion, importance_score |
-| LLMStoryBoundary | `pass2_raw.json` | block_ids, boundary_segments, story_summary, suggested_name |
-| StoryCandidate | `story_candidates.json` | id, hook/body/ending text, segments, scores |
-| StoryBlueprint | `story_blueprints.json` | id, segments, cut_points, duration |
-| ClipCandidate | `candidates.json` | id, hook/body/ending timestamps, scores |
-| PreviewManifest | `preview_manifest.json` | job_id, clips[] |
 
 ---
 
 ## Testing
 
 ```bash
-# Run all tests
+# Run all tests (181 tests)
 python -m pytest backend/tests/ -v
 
-# Run unit tests only
-python -m pytest backend/tests/unit/ -v
+# Run V10.1 pipeline core tests (31 tests)
+python -m pytest backend/tests/test_strategies.py backend/tests/test_objectives.py backend/tests/test_deduplication.py backend/tests/test_evaluation.py backend/tests/test_integration.py -v
 
-# Run integration tests only
-python -m pytest backend/tests/integration/ -v
+# Run existing unit tests only
+python -m pytest backend/tests/unit/ -v
 
 # Run with coverage
 python -m pytest backend/tests/ --cov=backend --cov-report=term-missing
 ```
 
-**Test count:** 150 tests across 21 test files
+### Test Summary
 
-| Category | Files | Tests |
-|---|---|---|
-| Unit tests | 18 | ~144 |
-| Integration tests | 3 | ~6 |
+| Category | Files | Tests | Description |
+|---|---|---|---|
+| V10.1 Pipeline Core | 5 | 31 | Strategies, objectives, dedup, evaluation, integration |
+| Existing Unit Tests | 18 | ~144 | Original pipeline tests |
+| **Total** | **23** | **~181** | |
+
+### Smoke Test
+
+```bash
+# Full pipeline smoke test (verifies all 10 production guarantees)
+python smoke_test.py
+```
+
+Expected output: 11 components executed, 10 production fixes verified, 83ms total time, 2 candidates scored.
 
 ---
 
 ## License
 
-This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
 
 ```
-MIT License - Copyright (c) 2026 Trimora
+MIT License — Copyright (c) 2026 Trimora
 ```
