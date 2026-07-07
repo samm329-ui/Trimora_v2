@@ -38,3 +38,25 @@ semantic:
   batch_size: 10
   context_overlap: 2
   batch_delay_seconds: 0.0
+
+models:
+  groq_llama_8b:
+    name: "llama-3.1-8b-instant"
+    provider: "groq"
+    context_window: 128000
+    max_input_tokens: 126000
+    max_output_tokens: 2000
+    rpm_limit: 30
+    tpm_limit: 6000
+    rpd_limit: 14400
+    chars_per_token: 3.7
+
+scheduler:
+  workers: 1
+  max_retries: 3
+  base_delay: 2.0
+  max_delay: 30.0
+  request_timeout: 90.0
+  circuit_breaker:
+    failure_threshold: 3
+    open_duration: 60.0
