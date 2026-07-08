@@ -1,10 +1,9 @@
 # backend/services/adaptive_windows.py
 
 from dataclasses import dataclass
-from backend.core.artifact import Artifact, generate_deterministic_id, compute_output_hash
+from backend.core.artifact import Artifact, ArtifactStage, create_artifact
 from backend.core.context import ExecutionContext
 from backend.models.data import TranscriptData, SignalData
-import time
 
 
 @dataclass(frozen=True)
@@ -34,15 +33,7 @@ class AdaptiveWindowSplitter:
             text_signals=text_signals,
             signal_count=len(segments) + len(audio_signals) + len(text_signals),
         )
-        output_hash = compute_output_hash(output_data)
-        parent_hash = artifact.compute_hash()
-
-        return Artifact(
-            artifact_id=generate_deterministic_id(parent_hash, "signals", 1, output_hash=output_hash),
-            version=1, created_at=time.time(),
-            parent_id=artifact.artifact_id, parent_hash=parent_hash,
-            data=output_data,
-        )
+        return create_artifact(data=output_data, stage=ArtifactStage.SIGNALS, parent=artifact)
 
     def _split_into_windows(self, segments: list) -> list:
         windows = []
