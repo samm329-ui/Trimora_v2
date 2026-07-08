@@ -1,8 +1,7 @@
 # backend/graph/evidence.py
 
-from backend.core.artifact import Artifact, generate_deterministic_id, compute_output_hash
+from backend.core.artifact import Artifact, ArtifactStage, create_artifact
 from backend.models.data import EvidenceData, GraphData
-import time
 
 
 class EvidenceGraph:
@@ -16,7 +15,6 @@ class EvidenceGraph:
 
         data = artifact.data
         raw_segments = data.segments if hasattr(data, 'segments') else []
-        audio_signals = data.audio_signals if hasattr(data, 'audio_signals') else []
 
         # Flatten windows into individual segments
         segments = []
@@ -46,12 +44,4 @@ class EvidenceGraph:
             nodes=nodes, edges=edges,
             node_count=len(nodes), edge_count=len(edges),
         )
-        output_hash = compute_output_hash(output_data)
-        parent_hash = artifact.compute_hash()
-
-        return Artifact(
-            artifact_id=generate_deterministic_id(parent_hash, "graph", 1, output_hash=output_hash),
-            version=1, created_at=time.time(),
-            parent_id=artifact.artifact_id, parent_hash=parent_hash,
-            data=output_data,
-        )
+        return create_artifact(data=output_data, stage=ArtifactStage.GRAPH, parent=artifact)
