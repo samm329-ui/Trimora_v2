@@ -67,7 +67,8 @@ from backend.core.v101_bridge import (
     merge_strategy_results,
     objective_results_to_scores,
 )
-from backend.models.data import CandidatesData
+from backend.models.data import CandidatesData, ScoresData
+from backend.core.artifact import create_artifact, ArtifactStage, PipelineContractError
 from backend.strategies.builtin import StoryStrategy, HookStrategy, RevealStrategy, ReactionStrategy, OpinionStrategy
 from backend.optimization.deduplication import CandidateDeduplicationService
 from backend.objectives.registry import ObjectiveRegistry
@@ -718,8 +719,18 @@ class ProductionPipeline:
 
             # Step V4: Deduplicate candidates
             if all_candidates:
-                dedup_artifact = await self.dedup_service.execute({"candidates": graph_artifact})
-                all_candidates = dedup_artifact.data.candidates if dedup_artifact and dedup_artifact.data else all_candidates
+                candidates_artifact = create_artifact(
+                    data=CandidatesData(
+                        candidates=all_candidates,
+                        candidate_count=len(all_candidates),
+                        strategies_used=strategies_used,
+                    ),
+                    stage=ArtifactStage.CANDIDATES_FOR_DEDUP,
+                    parent=graph_artifact,
+                )
+                dedup_artifact = await self.dedup_service.execute({"candidates": candidates_artifact})
+                if dedup_artifact and dedup_artifact.data:
+                    all_candidates = dedup_artifact.data.candidates
 
             # Step V5: Score candidates with V10.1 objectives (DAG order)
             scored_candidates = []
@@ -729,20 +740,19 @@ class ProductionPipeline:
                 scored_candidates.append({
                     **candidate,
                     "objective_scores": score_summary["objective_scores"],
-                    "v101_score": score_summary["overall_score"],
+                    "overall_score": score_summary["overall_score"],
                 })
 
             # Step V6: Narrative optimization (sort by start time)
-            scores_artifact = CandidatesData(
-                candidates=scored_candidates,
-                candidate_count=len(scored_candidates),
-                strategies_used=strategies_used,
+            scores_artifact = ScoresData(
+                scored_candidates=scored_candidates,
+                objective_scores={},
+                score_distribution={},
             )
-            from backend.core.artifact import Artifact as V101Artifact, generate_deterministic_id, compute_output_hash
-            scores_v101_artifact = V101Artifact(
-                artifact_id=generate_deterministic_id(graph_artifact.compute_hash(), "scores", 1, output_hash=compute_output_hash(scores_artifact)),
-                version=1, created_at=time.time(),
+            scores_v101_artifact = create_artifact(
                 data=scores_artifact,
+                stage=ArtifactStage.SCORES,
+                parent=graph_artifact,
             )
             narrative_result = await self.narrative_optimizer.execute({"scores": scores_v101_artifact})
 
