@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 
 from backend.models.evaluation import EvaluationRecord, EvaluationLifecycle, RejectionType, GroundTruth
+from backend.models.data import PortfolioData
+from backend.core.artifact import ArtifactStage, PipelineContractError
 
 
 class EvaluationLayer:
@@ -19,6 +21,12 @@ class EvaluationLayer:
         portfolio = artifact.data
         if not portfolio:
             return {"records": []}
+
+        if not isinstance(portfolio, PortfolioData):
+            raise PipelineContractError(
+                ArtifactStage.EVALUATION, PortfolioData, type(portfolio),
+                getattr(artifact, 'artifact_id', None), getattr(artifact, 'parent_id', None),
+            )
 
         config_snapshot = context.config.to_dict() if context and hasattr(context.config, 'to_dict') else (context.config if context else {})
         records = []
