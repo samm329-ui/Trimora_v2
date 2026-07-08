@@ -1,9 +1,8 @@
 # backend/optimization/deduplication.py
 
 from abc import ABC, abstractmethod
-from backend.core.artifact import Artifact, generate_deterministic_id, compute_output_hash
+from backend.core.artifact import Artifact, ArtifactStage, PipelineContractError, create_artifact
 from backend.models.data import CandidatesData
-import time
 
 
 class SimilarityProvider(ABC):
@@ -24,6 +23,9 @@ class JaccardSimilarity(SimilarityProvider):
 
 
 class CandidateDeduplicationService:
+    INPUT_TYPE = CandidatesData
+    OUTPUT_TYPE = CandidatesData
+
     def __init__(self, threshold: float = 0.5, similarity_provider: SimilarityProvider = None):
         self.threshold = threshold
         self.similarity = similarity_provider or JaccardSimilarity()
@@ -34,15 +36,19 @@ class CandidateDeduplicationService:
         if artifact is None:
             raise ValueError("CandidateDeduplicationService requires an input artifact")
 
-        candidates = artifact.data.candidates if hasattr(artifact.data, 'candidates') else []
+        if not isinstance(artifact.data, self.INPUT_TYPE):
+            raise PipelineContractError(
+                ArtifactStage.DEDUP, self.INPUT_TYPE, type(artifact.data),
+                artifact.artifact_id, artifact.parent_id,
+            )
+
+        candidates = artifact.data.candidates
         if not candidates:
             output_data = CandidatesData(candidates=[], candidate_count=0, strategies_used=[])
-            output_hash = compute_output_hash(output_data)
-            return Artifact(
-                artifact_id=generate_deterministic_id(artifact.compute_hash(), "dedup", 1, output_hash=output_hash),
-                version=1, created_at=time.time(),
-                parent_id=artifact.artifact_id, parent_hash=artifact.compute_hash(),
+            return create_artifact(
                 data=output_data,
+                stage=ArtifactStage.DEDUP,
+                parent=artifact,
             )
 
         keep = []
@@ -61,14 +67,12 @@ class CandidateDeduplicationService:
         output_data = CandidatesData(
             candidates=keep,
             candidate_count=len(keep),
-            strategies_used=artifact.data.strategies_used if hasattr(artifact.data, 'strategies_used') else [],
+            strategies_used=artifact.data.strategies_used,
             deduplication_result={"removed": removed, "original_count": len(candidates), "final_count": len(keep)},
         )
-        output_hash = compute_output_hash(output_data)
 
-        return Artifact(
-            artifact_id=generate_deterministic_id(artifact.compute_hash(), "dedup", 1, output_hash=output_hash),
-            version=1, created_at=time.time(),
-            parent_id=artifact.artifact_id, parent_hash=artifact.compute_hash(),
+        return create_artifact(
             data=output_data,
+            stage=ArtifactStage.DEDUP,
+            parent=artifact,
         )
