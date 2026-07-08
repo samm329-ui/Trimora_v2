@@ -1,8 +1,7 @@
 # backend/core/v101_bridge.py
 
-import time
 from typing import Any
-from backend.core.artifact import Artifact, generate_deterministic_id, compute_output_hash
+from backend.core.artifact import Artifact, ArtifactStage, create_artifact
 from backend.core.context import PipelineContext
 from backend.models.data import TranscriptData, SignalData, GraphData, CandidatesData, ScoresData, PortfolioData
 
@@ -31,12 +30,7 @@ def segments_to_graph_artifact(segments: list) -> Artifact[GraphData]:
             edges.append({"source": f"node_{i-1}", "target": f"node_{i}", "type": "temporal"})
 
     graph_data = GraphData(nodes=nodes, edges=edges, node_count=len(nodes), edge_count=len(edges))
-    output_hash = compute_output_hash(graph_data)
-    return Artifact(
-        artifact_id=generate_deterministic_id("", "graph_bridge", 1, output_hash=output_hash),
-        version=1, created_at=time.time(),
-        data=graph_data,
-    )
+    return create_artifact(data=graph_data, stage=ArtifactStage.GRAPH_BRIDGE)
 
 
 def segments_to_signal_artifact(segments: list) -> Artifact[SignalData]:
@@ -51,12 +45,7 @@ def segments_to_signal_artifact(segments: list) -> Artifact[SignalData]:
             seg_dicts.append({"id": getattr(seg, "id", ""), "text": getattr(seg, "text", ""), "start": getattr(seg, "start", 0), "end": getattr(seg, "end", 0)})
 
     signal_data = SignalData(segments=seg_dicts, signal_count=len(seg_dicts))
-    output_hash = compute_output_hash(signal_data)
-    return Artifact(
-        artifact_id=generate_deterministic_id("", "signal_bridge", 1, output_hash=output_hash),
-        version=1, created_at=time.time(),
-        data=signal_data,
-    )
+    return create_artifact(data=signal_data, stage=ArtifactStage.SIGNAL_BRIDGE)
 
 
 def candidates_to_scores_artifact(candidates: list) -> Artifact[ScoresData]:
@@ -83,12 +72,7 @@ def candidates_to_scores_artifact(candidates: list) -> Artifact[ScoresData]:
         })
 
     scores_data = ScoresData(scored_candidates=scored, objective_scores={}, score_distribution={})
-    output_hash = compute_output_hash(scores_data)
-    return Artifact(
-        artifact_id=generate_deterministic_id("", "scores_bridge", 1, output_hash=output_hash),
-        version=1, created_at=time.time(),
-        data=scores_data,
-    )
+    return create_artifact(data=scores_data, stage=ArtifactStage.SCORES_BRIDGE)
 
 
 def build_pipeline_context(
