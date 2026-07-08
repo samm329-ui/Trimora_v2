@@ -1,8 +1,7 @@
 # backend/services/roles.py
 
-from backend.core.artifact import Artifact, generate_deterministic_id, compute_output_hash
+from backend.core.artifact import Artifact, ArtifactStage, create_artifact
 from backend.models.data import SignalData
-import time
 
 
 class DynamicRoleClassifier:
@@ -31,11 +30,4 @@ class DynamicRoleClassifier:
             classified.append({**seg, "role": role})
 
         output_data = {"classified_segments": classified, "role_count": len(classified)}
-        output_hash = compute_output_hash(output_data)
-
-        return Artifact(
-            artifact_id=generate_deterministic_id(artifact.compute_hash(), "roles", 1, output_hash=output_hash),
-            version=1, created_at=time.time(),
-            parent_id=artifact.artifact_id, parent_hash=artifact.compute_hash(),
-            data=output_data,
-        )
+        return create_artifact(data=output_data, stage=ArtifactStage.ROLES, parent=artifact)
