@@ -128,8 +128,8 @@ async def run_pipeline():
         portfolio = await PortfolioOptimizer(top_k=5).execute({'scores': scores_art})
         print('  8. Portfolio: %d selected, diversity=%.3f' % (portfolio.data.selected_count, portfolio.data.diversity_score))
 
-        narrative = await NarrativeOptimizer().execute({'candidates': dedup})
-        print('  9. Narrative: %d reordered' % narrative.data.candidate_count)
+        narrative = await NarrativeOptimizer().execute({'scores': scores_art})
+        print('  9. Narrative: %d reordered' % len(narrative.data.scored_candidates))
 
         ctx_eval = ExecutionContext(job_id='smoke-test')
         eval_layer = EvaluationLayer(Path(tmpdir) / 'eval')
