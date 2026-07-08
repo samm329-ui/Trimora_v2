@@ -1,35 +1,38 @@
 # backend/optimization/narrative.py
 
-from backend.core.artifact import Artifact, generate_deterministic_id, compute_output_hash
-from backend.models.data import CandidatesData
-import time
+from backend.core.artifact import Artifact, ArtifactStage, PipelineContractError, create_artifact
+from backend.models.data import ScoresData
 
 
 class NarrativeOptimizer:
     """Reorders candidates for narrative flow."""
 
-    async def execute(self, inputs: dict) -> Artifact[CandidatesData]:
+    INPUT_TYPE = ScoresData
+    OUTPUT_TYPE = ScoresData
+
+    async def execute(self, inputs: dict) -> Artifact[ScoresData]:
         key = list(inputs.keys())[0] if inputs else None
         artifact = inputs.get(key) if key else None
         if artifact is None:
             raise ValueError("NarrativeOptimizer requires an input artifact")
 
-        candidates = artifact.data.candidates if hasattr(artifact.data, 'candidates') else []
+        if not isinstance(artifact.data, self.INPUT_TYPE):
+            raise PipelineContractError(
+                ArtifactStage.NARRATIVE, self.INPUT_TYPE, type(artifact.data),
+                artifact.artifact_id, artifact.parent_id,
+            )
 
-        # Sort by start time for narrative coherence
-        sorted_candidates = sorted(candidates, key=lambda c: c.get("start", 0))
+        scored = artifact.data.scored_candidates
+        sorted_scored = sorted(scored, key=lambda c: c.get("start", 0))
 
-        output_data = CandidatesData(
-            candidates=sorted_candidates,
-            candidate_count=len(sorted_candidates),
-            strategies_used=artifact.data.strategies_used if hasattr(artifact.data, 'strategies_used') else [],
+        output_data = ScoresData(
+            scored_candidates=sorted_scored,
+            objective_scores=artifact.data.objective_scores,
+            score_distribution=artifact.data.score_distribution,
         )
-        output_hash = compute_output_hash(output_data)
-        parent_hash = artifact.compute_hash()
 
-        return Artifact(
-            artifact_id=generate_deterministic_id(parent_hash, "narrative", 1, output_hash=output_hash),
-            version=1, created_at=time.time(),
-            parent_id=artifact.artifact_id, parent_hash=parent_hash,
+        return create_artifact(
             data=output_data,
+            stage=ArtifactStage.NARRATIVE,
+            parent=artifact,
         )
