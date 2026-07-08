@@ -6,7 +6,7 @@
 [![React 18](https://img.shields.io/badge/React-18-61DAFB.svg)](https://react.dev/)
 [![FFmpeg](https://img.shields.io/badge/FFmpeg-FFmpeg-orange.svg)](https://ffmpeg.org/)
 
-> AI-powered platform that transforms long-form videos into engaging short-form clips. V10.1 introduces a production-grade pipeline core with deterministic artifacts, immutable data, DAG execution, token-aware LLM scheduling, and pluggable strategies/objectives.
+> AI-powered platform that transforms long-form videos into engaging short-form clips. V10.1 introduces a production-grade pipeline core with deterministic artifacts, immutable data, DAG execution, token-aware LLM scheduling, pluggable strategies/objectives, and explicit pipeline contracts with fail-fast validation.
 
 ---
 
@@ -149,7 +149,7 @@ flowchart TB
 | # | Guarantee | Implementation |
 |---|---|---|
 | 1 | **Immutable data types** | All 9 data models use `frozen=True` |
-| 2 | **Deterministic artifact IDs** | `generate_deterministic_id()` with `output_hash` parameter |
+| 2 | **Deterministic artifact IDs** | `create_artifact()` factory with `output_hash` parameter |
 | 3 | **ExecutionContext not a God Object** | Split into `PipelineConfig`, `MetricsCollector`, `CacheStore`, `LoggerAdapter` |
 | 4 | **Immutable PipelineContext** | `PipelineContext` is frozen, read-only |
 | 5 | **DAG returns ExecutionResult** | Not `dict` - immutable result with trace, errors, latency stats |
@@ -158,6 +158,9 @@ flowchart TB
 | 8 | **Evaluation lifecycle states** | `EvaluationLifecycle`: GENERATED, REVIEWED, APPROVED, REJECTED, DEPLOYED |
 | 9 | **Snapshots with full context** | `SnapshotV1` includes git commit, model versions, feature flags |
 | 10 | **Automatic budget enforcement** | `BudgetEnforcer`: warning, count, disable, fallback |
+| 11 | **Explicit pipeline contracts** | Every stage declares `INPUT_TYPE` / `OUTPUT_TYPE` with `PipelineContractError` on mismatch |
+| 12 | **Centralized artifact creation** | `create_artifact()` factory - production code never calls `Artifact(...)` directly |
+| 13 | **Fail-fast validation** | `PipelineContractError` carries stage, expected, received, artifact_id, parent_id |
 
 ### Pipeline Stage Budgets
 
@@ -175,6 +178,57 @@ flowchart TB
 | portfolio_optimization | 200ms | 160ms | MMR + diversity |
 | evaluation_recording | 50ms | 40ms | Save evaluation records |
 | **Total** | **5000ms** | - | Pipeline-wide budget |
+
+### Pipeline Contracts
+
+Every pipeline stage declares its expected input and output types. Contract violations fail immediately with structured errors instead of silent `AttributeError` exceptions.
+
+```mermaid
+flowchart TB
+    subgraph Contracts["Pipeline Contract System"]
+        CS["ArtifactStage enum"]
+        CE["PipelineContractError"]
+        CA["create_artifact factory"]
+        VT["validate_artifact_data"]
+    end
+
+    subgraph Flow["Type-Safe Stage Flow"]
+        direction TB
+        G["GraphData"] -->|"strategies"| CD["CandidatesData"]
+        CD -->|"dedup"| CD
+        CD -->|"scoring"| SD["ScoresData"]
+        SD -->|"narrative"| SD
+        SD -->|"portfolio"| PD["PortfolioData"]
+        PD -->|"evaluation"| ED["dict records"]
+    end
+
+    CS --> CA
+    CE --> CA
+    VT --> CA
+
+    style CS fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
+    style CE fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
+    style CA fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
+    style VT fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
+```
+
+| Stage | Input Type | Output Type | Contract Enforced |
+|---|---|---|---|
+| Strategies | `PipelineContext` | `Artifact[CandidatesData]` | Type check |
+| Deduplication | `Artifact[CandidatesData]` | `Artifact[CandidatesData]` | `PipelineContractError` |
+| Narrative | `Artifact[ScoresData]` | `Artifact[ScoresData]` | `PipelineContractError` |
+| Portfolio | `Artifact[ScoresData]` | `Artifact[PortfolioData]` | `PipelineContractError` |
+| Evaluation | `Artifact[PortfolioData]` | `dict` | `PipelineContractError` |
+
+**Key components:**
+
+| Component | Location | Purpose |
+|---|---|---|
+| `ArtifactStage` | `backend/core/artifact.py` | Enum of all pipeline stages, strategies, and bridge adapters |
+| `PipelineContractError` | `backend/core/artifact.py` | Structured exception with stage, expected, received, artifact_id, parent_id |
+| `create_artifact()` | `backend/core/artifact.py` | Centralized artifact creation with deterministic IDs and optional validation |
+| `INPUT_TYPE` / `OUTPUT_TYPE` | Each stage class | Class attributes declaring type contracts |
+| `validate_artifact_data()` | `backend/core/artifact.py` | Extension point for artifact validation (empty for now) |
 
 ---
 
@@ -844,6 +898,7 @@ trimora/
 │   │   ├── test_deduplication.py
 │   │   ├── test_evaluation.py
 │   │   ├── test_integration.py
+│   │   ├── test_pipeline_contracts.py
 │   │   └── unit/
 │   └── utils/
 ├── frontend/
@@ -1001,8 +1056,14 @@ stateDiagram-v2
     queued --> failed
     analyzing --> failed
     scoring --> failed
-    complete --> [*]
 
+    queued --> cancelled
+    extracting_audio --> cancelled
+    chunking --> cancelled
+    transcribing --> cancelled
+    cancelled --> [*]
+
+    complete --> [*]
     failed --> queued : POST /api/retry
 ```
 
@@ -1753,6 +1814,9 @@ python -m pytest backend/tests/ -v
 # Run V10.1 pipeline core tests
 python -m pytest backend/tests/test_strategies.py backend/tests/test_objectives.py backend/tests/test_deduplication.py backend/tests/test_evaluation.py backend/tests/test_integration.py -v
 
+# Run pipeline contract tests
+python -m pytest backend/tests/test_pipeline_contracts.py -v
+
 # Run existing unit tests only
 python -m pytest backend/tests/unit/ -v
 
@@ -1763,7 +1827,7 @@ python -m pytest backend/tests/ --cov=backend --cov-report=term-missing
 ### Smoke Test
 
 ```bash
-# Full pipeline smoke test (verifies all 10 production guarantees)
+# Full pipeline smoke test (verifies all 13 production guarantees)
 python smoke_test.py
 ```
 
