@@ -1,9 +1,7 @@
 # backend/optimization/portfolio.py
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-import time
-from backend.core.artifact import Artifact, generate_deterministic_id, compute_output_hash
+from backend.core.artifact import Artifact, ArtifactStage, PipelineContractError, create_artifact
 from backend.models.data import ScoresData, PortfolioData
 
 
@@ -35,6 +33,9 @@ class DiversityPolicy:
 
 
 class PortfolioOptimizer:
+    INPUT_TYPE = ScoresData
+    OUTPUT_TYPE = PortfolioData
+
     def __init__(self, top_k: int = 20, policy: str = DiversityPolicy.BALANCED,
                  similarity_provider: SimilarityProvider = None):
         self.top_k = top_k
@@ -54,14 +55,18 @@ class PortfolioOptimizer:
             raise ValueError("PortfolioOptimizer requires an input artifact")
 
         scores = artifact.data
+        if not isinstance(scores, self.INPUT_TYPE):
+            raise PipelineContractError(
+                ArtifactStage.PORTFOLIO, self.INPUT_TYPE, type(scores),
+                artifact.artifact_id, artifact.parent_id,
+            )
+
         if not scores.scored_candidates:
             output_data = PortfolioData()
-            output_hash = compute_output_hash(output_data)
-            return Artifact(
-                artifact_id=generate_deterministic_id(artifact.compute_hash(), "portfolio", 1, output_hash=output_hash),
-                version=1, created_at=time.time(),
-                parent_id=artifact.artifact_id, parent_hash=artifact.compute_hash(),
+            return create_artifact(
                 data=output_data,
+                stage=ArtifactStage.PORTFOLIO,
+                parent=artifact,
             )
 
         lambda_q, lambda_d = self._policies.get(self.policy, (0.7, 0.3))
@@ -74,13 +79,11 @@ class PortfolioOptimizer:
             total_score=sum(c.get("overall_score", 0) for c in selected) / max(len(selected), 1),
             diversity_score=self._compute_diversity(selected),
         )
-        output_hash = compute_output_hash(output_data)
 
-        return Artifact(
-            artifact_id=generate_deterministic_id(artifact.compute_hash(), "portfolio", 1, output_hash=output_hash),
-            version=1, created_at=time.time(),
-            parent_id=artifact.artifact_id, parent_hash=artifact.compute_hash(),
+        return create_artifact(
             data=output_data,
+            stage=ArtifactStage.PORTFOLIO,
+            parent=artifact,
         )
 
     def _mmr_select(self, candidates: list, lambda_q: float, lambda_d: float) -> list:
