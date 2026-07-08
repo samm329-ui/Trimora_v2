@@ -1,8 +1,7 @@
 # backend/strategies/builtin.py
 
-import time
 from backend.strategies.base import ClipStrategy
-from backend.core.artifact import Artifact, generate_deterministic_id, compute_output_hash
+from backend.core.artifact import Artifact, ArtifactStage, create_artifact
 from backend.core.context import PipelineContext
 from backend.models.data import CandidatesData
 
@@ -35,14 +34,7 @@ class StoryStrategy(ClipStrategy):
             candidates=candidates, candidate_count=len(candidates),
             strategies_used=["story"],
         )
-        output_hash = compute_output_hash(output_data)
-        parent_hash = graph_artifact.compute_hash() if graph_artifact else ""
-
-        return Artifact(
-            artifact_id=generate_deterministic_id(parent_hash, "story", 1, output_hash=output_hash),
-            version=1, created_at=time.time(),
-            data=output_data,
-        )
+        return create_artifact(data=output_data, stage=ArtifactStage.STORY, parent=graph_artifact)
 
 
 class HookStrategy(ClipStrategy):
@@ -71,14 +63,7 @@ class HookStrategy(ClipStrategy):
             candidates=candidates, candidate_count=len(candidates),
             strategies_used=["hook"],
         )
-        output_hash = compute_output_hash(output_data)
-        parent_hash = graph_artifact.compute_hash() if graph_artifact else ""
-
-        return Artifact(
-            artifact_id=generate_deterministic_id(parent_hash, "hook", 1, output_hash=output_hash),
-            version=1, created_at=time.time(),
-            data=output_data,
-        )
+        return create_artifact(data=output_data, stage=ArtifactStage.HOOK, parent=graph_artifact)
 
 
 class RevealStrategy(ClipStrategy):
@@ -87,12 +72,7 @@ class RevealStrategy(ClipStrategy):
 
     async def generate(self, context: PipelineContext) -> Artifact[CandidatesData]:
         output_data = CandidatesData(candidates=[], candidate_count=0, strategies_used=["reveal"])
-        output_hash = compute_output_hash(output_data)
-        return Artifact(
-            artifact_id=generate_deterministic_id("", "reveal", 1, output_hash=output_hash),
-            version=1, created_at=time.time(),
-            data=output_data,
-        )
+        return create_artifact(data=output_data, stage=ArtifactStage.REVEAL)
 
 
 class ReactionStrategy(ClipStrategy):
@@ -101,12 +81,7 @@ class ReactionStrategy(ClipStrategy):
 
     async def generate(self, context: PipelineContext) -> Artifact[CandidatesData]:
         output_data = CandidatesData(candidates=[], candidate_count=0, strategies_used=["reaction"])
-        output_hash = compute_output_hash(output_data)
-        return Artifact(
-            artifact_id=generate_deterministic_id("", "reaction", 1, output_hash=output_hash),
-            version=1, created_at=time.time(),
-            data=output_data,
-        )
+        return create_artifact(data=output_data, stage=ArtifactStage.REACTION)
 
 
 class OpinionStrategy(ClipStrategy):
@@ -115,9 +90,4 @@ class OpinionStrategy(ClipStrategy):
 
     async def generate(self, context: PipelineContext) -> Artifact[CandidatesData]:
         output_data = CandidatesData(candidates=[], candidate_count=0, strategies_used=["opinion"])
-        output_hash = compute_output_hash(output_data)
-        return Artifact(
-            artifact_id=generate_deterministic_id("", "opinion", 1, output_hash=output_hash),
-            version=1, created_at=time.time(),
-            data=output_data,
-        )
+        return create_artifact(data=output_data, stage=ArtifactStage.OPINION)
