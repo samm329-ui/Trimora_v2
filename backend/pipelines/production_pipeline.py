@@ -50,6 +50,7 @@ from backend.services.story_detector import StoryDetector
 from backend.services.story_validator import StoryValidator
 from backend.services.coverage_analyzer import CoverageAnalyzer
 from backend.services.blueprint_generator import BlueprintGenerator
+from backend.services.deterministic_story_composer import DeterministicStoryComposer
 from backend.services.embedding_clusterer import EmbeddingClusterer
 from backend.services.block_synopsis_generator import BlockSynopsisGenerator
 from backend.services.priority_ranker import PriorityRanker
@@ -120,6 +121,7 @@ class ProductionPipeline:
         self.story_validator = StoryValidator()
         self.coverage_analyzer = CoverageAnalyzer()
         self.blueprint_generator = BlueprintGenerator(self.embedding_service)
+        self.story_composer = DeterministicStoryComposer()
         # New embedding-first pipeline services
         self.embedding_clusterer = EmbeddingClusterer(self.embedding_service)
         self.block_synopsis_generator = BlockSynopsisGenerator(self.embedding_service)
@@ -588,40 +590,31 @@ class ProductionPipeline:
                 # Update repo with annotations for Pass 2
                 repo = SegmentRepository(segments, blocks, annotations=annotations)
 
-                # Step 6: Pass 2 — Story Reasoning
+                # Step 6: Deterministic Story Composer (replaces LLM Pass 2)
                 t0 = perf_counter()
                 self.job_store.set_status(job_id, JobStatus.analyzing, 0.74)
 
-                pass2_requests = self.story_reasoner.create_requests(
-                    blocks, segments, annotations, summary_text, job_id,
+                pass2_result = self.story_composer.compose(
+                    all_segments=segments,
+                    annotations=annotations,
+                    summary=summary_data,
+                    topic_blocks=blocks,
                 )
-                pass2_tasks = self._requests_to_tasks(
-                    pass2_requests, repo, job_id, "reasoning", 600,
-                )
-                pass2_results = await self._submit_and_collect(pass2_tasks)
 
-                all_boundaries = []
-                all_pass2_raw = []
-                for result in pass2_results:
-                    try:
-                        compatible = type("Result", (), {"raw_response": result.data})()
-                        boundaries_batch = self.story_reasoner.parse_result(compatible)
-                        all_boundaries.extend(boundaries_batch)
-                        all_pass2_raw.append(result.data)
-                    except Exception as e:
-                        logger.warning("Pass 2 result parse failed: %s", e)
+                boundaries = []
+                for item in pass2_result.get("boundaries", []):
+                    from backend.models.semantic import LLMStoryBoundary
+                    boundaries.append(LLMStoryBoundary(**item))
 
-                boundaries = all_boundaries
-                pass2_raw = {"pass2_raw": all_pass2_raw}
+                pass2_raw = {"pass2_raw": [pass2_result]}
                 timing.story_reasoning_ms = (perf_counter() - t0) * 1000
 
                 annotations.llm_story_boundaries = boundaries
                 self.job_store.file_store.write_json(semantic_dir / "segment_annotations.json", annotations.model_dump(mode="json"))
                 self.job_store.file_store.write_json(semantic_dir / "pass2_raw.json", pass2_raw)
 
-                # Cleanup expired prompts
-                self._prompt_store.cleanup_expired()
-                logger.info("LLM Scheduler metrics: %s", llm_scheduler.metrics.to_dict())
+                # Save reasoning artifact
+                self.story_composer.save_reasoning_artifact(job_id)
 
             finally:
                 await llm_scheduler.stop()
