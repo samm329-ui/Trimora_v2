@@ -6,7 +6,7 @@
 [![React 18](https://img.shields.io/badge/React-18-61DAFB.svg)](https://react.dev/)
 [![FFmpeg](https://img.shields.io/badge/FFmpeg-FFmpeg-orange.svg)](https://ffmpeg.org/)
 
-> AI-powered platform that transforms long-form videos into engaging short-form clips. V10.1 introduces a production-grade pipeline core with deterministic artifacts, immutable data, DAG execution, token-aware LLM scheduling, pluggable strategies/objectives, and explicit pipeline contracts with fail-fast validation.
+> AI-powered platform that transforms long-form videos into engaging short-form clips. V10.1 introduces a production-grade pipeline core with deterministic artifacts, immutable data, DAG execution, token-aware LLM scheduling, a deterministic story composer, pluggable strategies/objectives, and explicit pipeline contracts with fail-fast validation.
 
 ---
 
@@ -14,10 +14,10 @@
 
 - [Overview](#overview)
 - [V10.1 Production Core](#v101-production-core)
+- [Deterministic Story Composer](#deterministic-story-composer)
 - [Features](#features)
 - [Tech Stack](#tech-stack)
 - [Architecture](#architecture)
-- [LLM Scheduler](#llm-scheduler)
 - [Semantic Enrichment Pipeline](#semantic-enrichment-pipeline)
 - [Project Structure](#project-structure)
 - [Production Pipeline](#production-pipeline)
@@ -36,7 +36,7 @@
 
 ## Overview
 
-Trimora takes a long video (podcast, lecture, interview) and automatically extracts the best short-form clips. V10.1 rebuilds the pipeline core with production-grade guarantees: deterministic artifact IDs, immutable data types, DAG-based execution, token-aware LLM scheduling with payload validation, and pluggable strategies and objectives.
+Trimora takes a long video (podcast, lecture, interview) and automatically extracts the best short-form clips. V10.1 rebuilds the pipeline core with production-grade guarantees: deterministic artifact IDs, immutable data types, DAG-based execution, token-aware LLM scheduling with payload validation, a deterministic story composer using beam search, and pluggable strategies and objectives.
 
 **Processing time estimates** (with Faster-Whisper GPU transcription):
 
@@ -58,17 +58,17 @@ Trimora takes a long video (podcast, lecture, interview) and automatically extra
 
 ## V10.1 Production Core
 
-V10.1 introduces a complete pipeline execution core with 10 production-readiness guarantees. Every component is immutable, deterministic, and budget-enforced.
+V10.1 introduces a complete pipeline execution core with production-readiness guarantees. Every component is immutable, deterministic, and budget-enforced.
 
 ### Core Modules
 
 ```mermaid
 flowchart TB
     subgraph Core["Pipeline Core"]
-        ART["Artifact[T] - frozen, deterministic IDs"]
+        ART["Artifact - frozen deterministic IDs"]
         CTX["ExecutionContext - split concerns"]
-        DAG["DAGExecutor - semaphore, budget, priority"]
-        ORCH["PipelineOrchestrator - wires stages into DAG"]
+        DAG["DAGExecutor - semaphore budget priority"]
+        ORCH["PipelineOrchestrator - wires stages"]
     end
 
     subgraph Data["Data Models"]
@@ -118,16 +118,6 @@ flowchart TB
         CDS["CandidateDeduplication"]
     end
 
-    subgraph Graph["Graph"]
-        EG["EvidenceGraph - window flattening"]
-        PKG["PersistentKnowledgeGraph"]
-    end
-
-    subgraph Evaluation["Evaluation"]
-        EL["EvaluationLayer - lifecycle states"]
-        SSR["PipelineSnapshots - git commit, model versions"]
-    end
-
     ORCH --> DAG
     DAG --> ART
     CTX --> PS
@@ -136,15 +126,9 @@ flowchart TB
     NO --> CD
     PO --> CD
     CDS --> CD
-    EL --> PD
-
-    style ART fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
-    style DAG fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
-    style ORCH fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
-    style PS fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
 ```
 
-### 10 Production Guarantees
+### 13 Production Guarantees
 
 | # | Guarantee | Implementation |
 |---|---|---|
@@ -162,73 +146,90 @@ flowchart TB
 | 12 | **Centralized artifact creation** | `create_artifact()` factory - production code never calls `Artifact(...)` directly |
 | 13 | **Fail-fast validation** | `PipelineContractError` carries stage, expected, received, artifact_id, parent_id |
 
-### Pipeline Stage Budgets
-
-| Stage | Budget | Warning | Description |
-|---|---|---|---|
-| adaptive_windows | 100ms | 80ms | Window splitting |
-| signal_extraction | 200ms | 160ms | Audio/text signal extraction |
-| evidence_compilation | 500ms | 400ms | Evidence graph compilation |
-| graph_construction | 300ms | 240ms | Knowledge graph build |
-| role_classification | 150ms | 120ms | Hook/body/ending classification |
-| strategy_execution | 1000ms | 800ms | All clip strategies |
-| candidate_deduplication | 100ms | 80ms | Similarity dedup |
-| objective_scoring | 2000ms | 1600ms | All 10 objectives |
-| narrative_optimization | 200ms | 160ms | Narrative flow sort |
-| portfolio_optimization | 200ms | 160ms | MMR + diversity |
-| evaluation_recording | 50ms | 40ms | Save evaluation records |
-| **Total** | **5000ms** | - | Pipeline-wide budget |
-
 ### Pipeline Contracts
 
-Every pipeline stage declares its expected input and output types. Contract violations fail immediately with structured errors instead of silent `AttributeError` exceptions.
+Every pipeline stage declares its expected input and output types. Contract violations fail immediately with structured errors.
+
+```mermaid
+flowchart LR
+    G["GraphData"] -->|"strategies"| CD["CandidatesData"]
+    CD -->|"dedup"| CD
+    CD -->|"scoring"| SD["ScoresData"]
+    SD -->|"narrative"| SD
+    SD -->|"portfolio"| PD["PortfolioData"]
+    PD -->|"evaluation"| ED["dict records"]
+```
+
+| Stage | Input Type | Output Type |
+|---|---|---|
+| Strategies | `PipelineContext` | `Artifact[CandidatesData]` |
+| Deduplication | `Artifact[CandidatesData]` | `Artifact[CandidatesData]` |
+| Narrative | `Artifact[ScoresData]` | `Artifact[ScoresData]` |
+| Portfolio | `Artifact[ScoresData]` | `Artifact[PortfolioData]` |
+| Evaluation | `Artifact[PortfolioData]` | `dict` |
+
+---
+
+## Deterministic Story Composer
+
+The Deterministic Story Composer replaces the broken LLM-based Pass 2 story boundary detection with a deterministic editing engine. It uses beam search to generate high-quality candidate story edits from structured semantic outputs.
+
+**Architecture frozen. Weights tunable.**
+
+### How It Works
+
+The composer does not discover knowledge. It reasons over knowledge that has already been extracted by Pass 1. Its responsibility is editing, not understanding.
 
 ```mermaid
 flowchart TB
-    subgraph Contracts["Pipeline Contract System"]
-        CS["ArtifactStage enum"]
-        CE["PipelineContractError"]
-        CA["create_artifact factory"]
-        VT["validate_artifact_data"]
-    end
-
-    subgraph Flow["Type-Safe Stage Flow"]
-        direction TB
-        G["GraphData"] -->|"strategies"| CD["CandidatesData"]
-        CD -->|"dedup"| CD
-        CD -->|"scoring"| SD["ScoresData"]
-        SD -->|"narrative"| SD
-        SD -->|"portfolio"| PD["PortfolioData"]
-        PD -->|"evaluation"| ED["dict records"]
-    end
-
-    CS --> CA
-    CE --> CA
-    VT --> CA
-
-    style CS fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
-    style CE fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
-    style CA fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
-    style VT fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
+    P1["Pass 1: Semantic Analysis"] --> COMP["Deterministic Story Composer"]
+    COMP --> SD["StoryDetector"]
+    SD --> SV["StoryValidator"]
+    SV --> BG["BlueprintGenerator"]
 ```
 
-| Stage | Input Type | Output Type | Contract Enforced |
+### Three-Axis Scoring
+
+Each segment is scored on three axes with dynamic weights that shift based on story position:
+
+| Story Position | Narrative | Value | Resolution |
 |---|---|---|---|
-| Strategies | `PipelineContext` | `Artifact[CandidatesData]` | Type check |
-| Deduplication | `Artifact[CandidatesData]` | `Artifact[CandidatesData]` | `PipelineContractError` |
-| Narrative | `Artifact[ScoresData]` | `Artifact[ScoresData]` | `PipelineContractError` |
-| Portfolio | `Artifact[ScoresData]` | `Artifact[PortfolioData]` | `PipelineContractError` |
-| Evaluation | `Artifact[PortfolioData]` | `dict` | `PipelineContractError` |
+| Beginning (0-25%) | 0.55 | 0.35 | 0.10 |
+| Middle (25-75%) | 0.30 | 0.50 | 0.20 |
+| Ending (75-100%) | 0.20 | 0.25 | 0.55 |
 
-**Key components:**
+- **Narrative**: Does this segment belong to the same story? (promise entity alignment, topic similarity)
+- **Value**: Does this improve the edit? (novelty, curiosity, emotion diversity)
+- **Resolution**: Does this move toward a satisfying ending? (duration fitness, ending strength)
 
-| Component | Location | Purpose |
+### Beam Search
+
+The composer explores multiple story paths simultaneously using beam search with diversity penalties to ensure varied output.
+
+### Deduplication
+
+Stories are deduplicated by clustering overlapping boundaries and selecting the best representative. Does not merge stories - preserves alternative edits.
+
+### Weight Profiles
+
+Domain-specific tuning profiles are available:
+
+| Profile | Focus |
+|---|---|
+| `default` | Balanced general-purpose |
+| `gaming` | Higher curiosity and emotion |
+| `podcast` | Stronger narrative promise |
+| `documentary` | Higher curiosity weighting |
+| `comedy` | Emotion-driven with curiosity |
+| `finance` | Strong narrative promise |
+
+### Debug Levels
+
+| Level | Content | Size |
 |---|---|---|
-| `ArtifactStage` | `backend/core/artifact.py` | Enum of all pipeline stages, strategies, and bridge adapters |
-| `PipelineContractError` | `backend/core/artifact.py` | Structured exception with stage, expected, received, artifact_id, parent_id |
-| `create_artifact()` | `backend/core/artifact.py` | Centralized artifact creation with deterministic IDs and optional validation |
-| `INPUT_TYPE` / `OUTPUT_TYPE` | Each stage class | Class attributes declaring type contracts |
-| `validate_artifact_data()` | `backend/core/artifact.py` | Extension point for artifact validation (empty for now) |
+| `OFF` | No reasoning artifact | 0 |
+| `SUMMARY` | Statistics + report only | ~50 KB |
+| `FULL` | Every decision with traces | ~15 MB |
 
 ---
 
@@ -249,7 +250,8 @@ flowchart TB
 | ProviderAdapter | Model-aware execution with retry, backoff, and prompt resolution |
 | ProviderRouter | Thread-safe round-robin across multiple API keys/providers |
 | Embedding Topic Clustering | sentence-transformers for adaptive block boundaries |
-| LLM Semantic Enrichment | Pass 1: segment annotation, Pass 2: story boundary detection |
+| LLM Semantic Enrichment | Pass 1: segment annotation, Pass 2: deterministic story composition |
+| Deterministic Story Composer | Beam search with three-axis scoring, deduplication, and weight profiles |
 | Structured Summary | Global video summary as root semantic artifact |
 | Block Synopses | Deterministic per-block summaries for debugging and reuse |
 | Story Detection and Repair | Candidate formation, verification, and repair |
@@ -262,7 +264,6 @@ flowchart TB
 | Pluggable Objectives | 10 built-in scoring objectives with dependency DAG |
 | Pipeline Snapshots | Git commit, model versions, feature flags at each stage |
 | Evaluation Lifecycle | 5-state lifecycle: Generated, Reviewed, Approved, Rejected, Deployed |
-| Checkpointing | Pass 1 and Pass 2 resume from last completed batch |
 | FFmpeg Rendering | Direct MP4 clip export |
 | Performance Monitoring | Per-chunk RTF logging and transcription analytics |
 | Dark Theme UI | Modern React frontend with dark mode |
@@ -276,11 +277,12 @@ flowchart TB
 | Backend | Python 3.11+, FastAPI, Pydantic v2 |
 | Pipeline Core | Custom DAG executor, frozen dataclasses, deterministic hashing |
 | LLM Scheduling | Token-aware scheduler, circuit breaker, reservation-based budget |
+| Story Composition | Deterministic beam search, three-axis scoring, domain weight profiles |
 | Frontend | React 18, TypeScript, Vite, Tailwind CSS |
 | Media Processing | FFmpeg, ffprobe |
 | Transcription | Faster-Whisper (local, CPU/GPU), Groq (cloud), Gemini (cloud) |
 | Embeddings | sentence-transformers (all-MiniLM-L6-v2), TF-IDF fallback |
-| LLM (Semantic) | Groq (Llama 3.1), Gemini - for Pass 1/2 semantic enrichment |
+| LLM (Semantic) | Groq (Llama 3.1), Gemini - for Pass 1 semantic enrichment |
 | Concurrency | asyncio worker pools with semaphore |
 | Storage | Local JSON files (database-ready architecture) |
 | Deployment | Docker Compose, Windows batch launcher |
@@ -303,16 +305,6 @@ flowchart TB
         ORC --> PIPE["Production Pipeline"]
     end
 
-    subgraph Core["Pipeline Core V10.1"]
-        PIPE --> DAG["DAGExecutor"]
-        DAG --> ART["Artifact[T]"]
-        DAG --> BUD["BudgetEnforcer"]
-        DAG --> TRACE["ExecutionResult"]
-        PIPE --> LS["LLM Scheduler"]
-        LS --> TB["TokenBudget"]
-        LS --> CB["CircuitBreaker"]
-    end
-
     subgraph Ingestion["Ingestion"]
         PIPE --> EXT["Audio Extraction"]
         EXT --> CHUNK["Chunk Planning"]
@@ -323,7 +315,6 @@ flowchart TB
         SCHED --> WP["Worker Pool"]
         WP --> TRANS["Transcription"]
         TRANS -->|"local"| WM["WhisperManager"]
-        WM --> FW["Faster-Whisper"]
         TRANS -->|"cloud"| GROQ["Groq API"]
         TRANS -->|"fallback"| GEMINI["Gemini API"]
         TRANS --> MERGE["Transcript Merge"]
@@ -340,25 +331,26 @@ flowchart TB
         BLOCKS --> SYN["Block Synopses"]
         SYN --> SUM["Structured Summary"]
         SUM --> P1["Pass 1: Annotation"]
-        P1 --> P2["Pass 2: Story Reasoning"]
+        P1 --> P2["Story Composer"]
         P2 --> SD["Story Detection"]
         SD --> SV["Story Validation"]
         SV --> BG["Blueprint Generation"]
     end
 
+    subgraph V101["V10.1 Pipeline Core"]
+        BG --> STRAT["5 Clip Strategies"]
+        STRAT --> DEDUP["Candidate Deduplication"]
+        DEDUP --> OBJ["10 Scoring Objectives"]
+        OBJ --> NARR["Narrative Optimization"]
+        NARR --> PORT["Portfolio Optimization"]
+        PORT --> EVAL["Evaluation Recording"]
+    end
+
     subgraph Output["Output"]
-        FEAT --> RANK["Ranking Engine"]
+        EVAL --> RANK["Multi-Stage Ranking"]
         RANK --> PREV["Preview"]
         PREV --> RENDER["FFmpeg Render"]
     end
-
-    style DAG fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
-    style ART fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
-    style BUD fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
-    style TRACE fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
-    style LS fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
-    style TB fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
-    style CB fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
 ```
 
 ### End-to-End Pipeline Flow
@@ -389,11 +381,11 @@ flowchart TB
     FEAT --> EMB["Embedding Clustering"]
     EMB --> BLOCKS["Topic Blocks"]
     BLOCKS --> SYN["Block Synopses"]
-    SYN --> SUMMARY["Structured Summary - 1 LLM call"]
+    SYN --> SUMMARY["Structured Summary"]
 
-    SUMMARY --> P1["Pass 1: Segment Annotation - parallel batches"]
+    SUMMARY --> P1["Pass 1: Segment Annotation"]
     BLOCKS --> P1
-    P1 --> P2["Pass 2: Story Reasoning - parallel blocks"]
+    P1 --> P2["Story Composer: Beam Search"]
     BLOCKS --> P2
     SUMMARY --> P2
 
@@ -402,80 +394,40 @@ flowchart TB
     REPAIR --> VALID["Story Validation"]
     VALID --> BLUE["Blueprint Generation"]
 
-    BLUE --> STORY["Story Strategy"]
-    BLUE --> HOOK["Hook Strategy"]
-    BLUE --> REVEAL["Reveal Strategy"]
-    BLUE --> REACT["Reaction Strategy"]
-    BLUE --> OPINION["Opinion Strategy"]
-
-    STORY --> DEDUP["Candidate Deduplication"]
-    HOOK --> DEDUP
-    REVEAL --> DEDUP
-    REACT --> DEDUP
-    OPINION --> DEDUP
-
-    DEDUP --> OBJ["Objective Scoring - 10 objectives"]
+    BLUE --> DEDUP["Strategy Execution + Dedup"]
+    DEDUP --> OBJ["Objective Scoring"]
     OBJ --> NARR["Narrative Optimization"]
-    NARR --> PORT["Portfolio Optimization - MMR + diversity"]
-    PORT --> EVAL["Evaluation Recording"]
+    NARR --> PORT["Portfolio Optimization"]
+    PORT --> EVAL["Evaluation"]
 
-    EVAL --> RANK["Multi-Stage Ranking - 11 stages"]
+    EVAL --> RANK["Multi-Stage Ranking"]
     RANK --> PREV["Preview Manifest"]
     PREV --> RENDER["FFmpeg Render MP4"]
     RENDER --> DONE(["Complete"])
 
     AUDIO -->|"Error"| ERR2["Error: extraction failed"]
     WP -->|"Error"| ERR3["Error: transcription failed"]
-
-    style IN fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
-    style DONE fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
-    style ERR1 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
-    style ERR2 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
-    style ERR3 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
-    style WHISPER fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
-    style GROQ2 fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
-    style GEMIN2 fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
-    style STUB fill:#6b7280,color:#fff,stroke:#4b5563,stroke-width:2px
-    style SUMMARY fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
-    style P1 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
-    style P2 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
-    style STORY fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
-    style HOOK fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
-    style REVEAL fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
-    style REACT fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
-    style OPINION fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
-    style DEDUP fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
-    style OBJ fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
-    style NARR fill:#06b6d4,color:#fff,stroke:#0891b2,stroke-width:2px
-    style PORT fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
-    style EVAL fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
-    style RANK fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
 ```
 
 ### Data Flow
 
 ```mermaid
-flowchart TB
-    VIDEO["Video File"] --> AUDIO["audio.opus"]
-    AUDIO --> CHUNKS["audio/chunks/*.opus"]
-    CHUNKS --> TRANSCRIPT["transcript/transcript.json"]
-    TRANSCRIPT --> SEGMENTS["segments/atomic_segments.json"]
-    SEGMENTS --> FEATURES["features/feature_vectors.json"]
-    SEGMENTS --> EMBEDDINGS["semantic/segment_embeddings.json"]
-    EMBEDDINGS --> BLOCKS["semantic/topic_blocks.json"]
-    EMBEDDINGS --> BLOCK_EMB["semantic/block_embeddings.json"]
-    BLOCKS --> SYNOPSES["semantic/block_synopses.json"]
-    BLOCKS --> PQ["semantic/priority_queue.json"]
-    TRANSCRIPT --> SUMMARY["semantic/summary.json"]
-    SEGMENTS --> ANNOTATIONS["semantic/segment_annotations.json"]
-    ANNOTATIONS --> PASS1_RAW["semantic/pass1_raw.json"]
-    ANNOTATIONS --> PASS2_RAW["semantic/pass2_raw.json"]
-    ANNOTATIONS --> STORIES["stories/validated_stories.json"]
-    STORIES --> BLUEPRINTS["clips/story_blueprints.json"]
-    FEATURES --> CANDIDATES["clips/candidates.json"]
-    CANDIDATES --> RANKED["clips/ranked_clips.json"]
-    RANKED --> PREVIEW["clips/preview_manifest.json"]
-    PREVIEW --> EXPORT["exports/reel_001.mp4"]
+flowchart LR
+    V["Video"] --> A["audio.opus"]
+    A --> C["chunks/*.opus"]
+    C --> T["transcript.json"]
+    T --> S["atomic_segments.json"]
+    S --> F["feature_vectors.json"]
+    S --> E["segment_annotations.json"]
+    E --> B["topic_blocks.json"]
+    B --> SYN["block_synopses.json"]
+    SYN --> SM["summary.json"]
+    SM --> P2["story boundaries"]
+    P2 --> BL["story_blueprints.json"]
+    BL --> CD["candidates.json"]
+    CD --> RK["ranked_clips.json"]
+    RK --> PV["preview_manifest.json"]
+    PV --> EX["reel_001.mp4"]
 ```
 
 ---
@@ -484,18 +436,11 @@ flowchart TB
 
 The LLM Scheduler replaces the old ExecutionEngine/PipelineExecutor architecture with a token-aware, single-responsibility component system that solves both 413 (payload too large) and 429 (rate limit) errors.
 
-### Problem Statement
-
-- **413 errors**: Prompt payload exceeds model max input token limit (e.g., 10,936 tokens requested vs model limit)
-- **429 errors**: TPM/RPM quota exhaustion from concurrent workers (e.g., 5,760 used of 6,000 limit with 3,133 requested)
-
-These are fundamentally different problems requiring separate solutions: payload validation/splitting for 413, and token-aware scheduling for 429.
-
 ### Architecture
 
 ```mermaid
 flowchart TB
-    subgraph Input["Pipeline Layer"]
+    subgraph Pipeline["Pipeline Layer"]
         PL["ProductionPipeline"]
         PF["PromptFactory"]
         PS2["PromptStore"]
@@ -511,19 +456,12 @@ flowchart TB
         TB2["TokenBudget"]
         CB["CircuitBreaker"]
         EP["ExecutionPolicy"]
-        HC["Heartbeat"]
-        MT["SchedulerMetrics"]
     end
 
     subgraph Execution["Execution Layer"]
         PA["ProviderAdapter"]
         MR["ModelRegistry"]
         PR["ProviderRouter"]
-    end
-
-    subgraph Providers["LLM Providers"]
-        GROQ3["Groq - Llama 3.1"]
-        GEMI["Gemini - Flash"]
     end
 
     PL -->|"creates tasks"| PF
@@ -535,43 +473,27 @@ flowchart TB
     LS -->|"reserves tokens"| TB2
     LS -->|"checks health"| CB
     LS -->|"wraps retry"| EP
-    LS -->|"logs state every 30s"| HC
-    LS -->|"tracks workers and queue"| MT
     EP -->|"dispatches"| PA
     PA -->|"resolves prompt"| PS2
-    PA -->|"reserves budget"| TB2
     PA -->|"calls provider"| MR
     MR --> PR
-    PR --> GROQ3
-    PR --> GEMI
-
-    style LS fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
-    style TB2 fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
-    style CB fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
-    style PV fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
-    style SPL fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
-    style PA fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
-    style MR fill:#06b6d4,color:#fff,stroke:#0891b2,stroke-width:2px
-    style HC fill:#06b6d4,color:#fff,stroke:#0891b2,stroke-width:2px
-    style MT fill:#06b6d4,color:#fff,stroke:#0891b2,stroke-width:2px
 ```
 
 ### Key Components
 
 | Component | Location | Purpose |
 |---|---|---|
-| `LLMScheduler` | `backend/execution/scheduler.py` | Thin queue-and-dispatch with sequence counter for stable ordering; never raises from `submit()` |
-| `TokenBudget` | `backend/execution/token_budget.py` | Reservation model with `reserve()` / `commit()` / `rollback()` using `asyncio.Condition` |
-| `CircuitBreaker` | `backend/execution/circuit_breaker.py` | CLOSED/OPEN/HALF_OPEN state machine; stops retrying when provider is exhausted |
-| `ExecutionPolicy` | `backend/execution/execution_policy.py` | Retry, backoff, timeout wrapping the circuit breaker |
-| `ModelRegistry` | `backend/execution/model_registry.py` | Immutable model-to-provider mapping; frozen after startup |
-| `ProviderAdapter` | `backend/execution/provider_adapter.py` | Model-aware execution; resolves prompts from PromptStore at execution time |
-| `PayloadValidator` | `backend/services/payload_validator.py` | Validates task payloads against `ModelConfig` limits before execution |
-| `PayloadSplitter` | `backend/services/payload_splitter.py` | Task-specific splitting (Transcript, Reasoning, Summary) with `SplitMetadata` |
-| `PromptStore` | `backend/services/prompt_store.py` | Reference-based prompt storage with TTL, deduplication, and reference counting |
-| `PromptFactory` | `backend/services/prompt_factory.py` | Business logic creating `LLMTask` objects from pipeline context |
-| `TokenCounter` | `backend/services/token_counter.py` | Token counting with tiktoken + heuristic fallback |
-| `ModelConfig` | `backend/config/models.py` | Immutable model configuration with computed safe limits |
+| `LLMScheduler` | `backend/execution/scheduler.py` | Thin queue-and-dispatch with sequence counter |
+| `TokenBudget` | `backend/execution/token_budget.py` | Reservation model with reserve/commit/rollback |
+| `CircuitBreaker` | `backend/execution/circuit_breaker.py` | CLOSED/OPEN/HALF_OPEN state machine |
+| `ExecutionPolicy` | `backend/execution/execution_policy.py` | Retry, backoff, timeout wrapping circuit breaker |
+| `ModelRegistry` | `backend/execution/model_registry.py` | Immutable model-to-provider mapping |
+| `ProviderAdapter` | `backend/execution/provider_adapter.py` | Model-aware execution with prompt resolution |
+| `PayloadValidator` | `backend/services/payload_validator.py` | Validates payloads against model limits |
+| `PayloadSplitter` | `backend/services/payload_splitter.py` | Task-specific splitting strategies |
+| `PromptStore` | `backend/services/prompt_store.py` | Reference-based prompt storage with TTL |
+| `PromptFactory` | `backend/services/prompt_factory.py` | Creates LLMTasks from pipeline context |
+| `TokenCounter` | `backend/services/token_counter.py` | tiktoken + heuristic fallback |
 
 ### Task Lifecycle
 
@@ -584,83 +506,10 @@ stateDiagram-v2
     EXECUTING --> COMPLETED : success
     EXECUTING --> RETRYING : retryable failure
     RETRYING --> WAITING_FOR_BUDGET : retry
-    EXECUTING --> FAILED : non-retryable or exhausted
+    EXECUTING --> FAILED : non-retryable
     QUEUED --> FAILED : enqueue error
     COMPLETED --> [*]
     FAILED --> [*]
-```
-
-### Token Budget Flow
-
-```mermaid
-sequenceDiagram
-    participant PL as ProductionPipeline
-    participant LS as LLMScheduler
-    participant TB as TokenBudget
-    participant PA as ProviderAdapter
-    participant MR as ModelRegistry
-    participant PR as ProviderRouter
-    participant LLM as LLM Provider
-
-    PL->>LS : submit(LLMTask)
-    Note over LS : never raises - always returns handle
-    LS->>LS : enqueue with sequence counter
-    LS-->>PL : LLMExecutionHandle
-
-    loop Worker Loop
-        LS->>LS : dequeue task
-        LS->>PA : execute(task)
-        PA->>MR : get provider for model
-        MR-->>PA : provider and config
-        PA->>PA : resolve prompt from PromptStore
-        PA->>TB : reserve(estimated_tokens)
-
-        alt budget available
-            TB-->>PA : TokenReservation
-            PA->>PR : execute(prompt)
-            PR->>LLM : API call
-            LLM-->>PR : response
-            PR-->>PA : raw response
-            PA->>TB : commit(actual_tokens)
-            PA-->>LS : LLMExecutionResult
-            LS->>LS : set_result on handle
-        else budget exhausted
-            TB-->>PA : None after timeout
-            PA-->>LS : LLMExecutionResult failed
-            LS->>LS : set_result on handle
-        end
-    end
-
-    PL->>PL : asyncio.gather on handles
-    PL->>LS : stop()
-    LS->>LS : cancel heartbeat and workers
-```
-
-### Model Configuration
-
-```yaml
-# backend/config/runtime.yaml
-models:
-  groq_llama_8b:
-    name: "llama-3.1-8b-instant"
-    provider: "groq"
-    context_window: 128000
-    max_input_tokens: 126000
-    max_output_tokens: 2000
-    rpm_limit: 30
-    tpm_limit: 6000
-    rpd_limit: 14400
-    chars_per_token: 3.7
-
-scheduler:
-  workers: 1
-  max_retries: 3
-  base_delay: 2.0
-  max_delay: 30.0
-  request_timeout: 90.0
-  circuit_breaker:
-    failure_threshold: 3
-    open_duration: 60.0
 ```
 
 ### Safe Operating Limits
@@ -674,33 +523,6 @@ scheduler:
 | Circuit breaker threshold | 3 failures | Opens for 60s after 3 consecutive failures |
 | Max retries | 3 | With exponential backoff (2s base, 30s max) |
 
-### Scheduler Resilience
-
-The scheduler is designed to never permanently die from a single task failure.
-
-| Feature | Description |
-|---|---|
-| `submit()` never raises | Wraps entire body in try/except; always returns a handle |
-| Worker loop never exits | `except Exception` catches unexpected errors, logs them, and continues |
-| Sequence counter | `itertools.count()` provides deterministic FIFO ordering when priorities tie |
-| `task_done()` safety | `dequeued` flag ensures correct queue accounting even on `CancelledError` |
-| `handle.done()` guard | Prevents `InvalidStateError` when setting error on completed handles |
-| Scheduler outage detection | Logs `CRITICAL` if `active_workers == 0` with queued tasks |
-
-### Scheduler Metrics
-
-Emitted every 30 seconds via heartbeat and on shutdown.
-
-| Metric | Description |
-|---|---|
-| `active_workers` | Number of workers currently processing tasks |
-| `queue_depth_peak` | Maximum queue depth observed since startup |
-| `worker_exceptions` | Total uncaught exceptions across all workers |
-| `submitted` | Total tasks submitted to the queue |
-| `completed` | Total tasks that finished successfully |
-| `failed` | Total tasks that failed |
-| `total_tokens` | Total tokens consumed across all completed tasks |
-
 ---
 
 ## Semantic Enrichment Pipeline
@@ -712,24 +534,17 @@ The semantic enrichment layer uses an embedding-first architecture that reduces 
 ```mermaid
 flowchart TB
     START(["Segments + Transcript"]) --> EMB["Embedding Clustering"]
-    EMB -->|"384-dim vectors"| BLOCKS["Topic Blocks - 3-7 segments each"]
+    EMB --> BLOCKS["Topic Blocks"]
     BLOCKS --> SYNOPSIS["Deterministic Synopsis per Block"]
     SYNOPSIS --> PRIORITY["Priority Queue"]
 
-    BLOCKS --> LS["LLM Scheduler"]
-    LS --> PA["ProviderAdapter"]
-    PA --> MR["ModelRegistry"]
-    MR --> ROUTER["ProviderRouter"]
-    ROUTER --> GROQ["Groq - Llama 3.1"]
-    ROUTER --> GEMI["Gemini - Flash"]
-
-    LS --> SUMMARY["Structured Summary - 1 LLM call"]
-    SUMMARY --> PASS1["Pass 1: Segment Annotation - parallel batches"]
+    BLOCKS --> SUMMARY["Structured Summary - 1 LLM call"]
+    SUMMARY --> PASS1["Pass 1: Segment Annotation"]
     PRIORITY --> PASS1
     BLOCKS --> PASS1
     PASS1 --> ANNOTATIONS["Segment Annotations"]
 
-    ANNOTATIONS --> PASS2["Pass 2: Story Reasoning - parallel blocks"]
+    ANNOTATIONS --> PASS2["Story Composer: Beam Search"]
     BLOCKS --> PASS2
     SUMMARY --> PASS2
     PASS2 --> BOUNDARIES["Story Boundaries"]
@@ -737,16 +552,6 @@ flowchart TB
     BOUNDARIES --> DETECT["Story Detection"]
     DETECT --> VALIDATE["Story Validation"]
     VALIDATE --> BLUEPRINTS["Blueprint Generation"]
-
-    style EMB fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
-    style BLOCKS fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
-    style LS fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
-    style PA fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
-    style MR fill:#06b6d4,color:#fff,stroke:#0891b2,stroke-width:2px
-    style ROUTER fill:#06b6d4,color:#fff,stroke:#0891b2,stroke-width:2px
-    style SUMMARY fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
-    style PASS1 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
-    style PASS2 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
 ```
 
 ### Token Savings
@@ -770,161 +575,120 @@ trimora/
 │   │   ├── app.py
 │   │   └── lifespan.py
 │   ├── core/                          # V10.1 Pipeline Core
-│   │   ├── __init__.py
-│   │   ├── artifact.py                # Artifact[T], ErrorArtifact, ObjectiveResult
+│   │   ├── artifact.py                # Artifact[T], ErrorArtifact
 │   │   ├── context.py                 # ExecutionContext, PipelineContext
-│   │   ├── dag.py                     # DAGExecutor, ExecutionResult, BudgetEnforcer
-│   │   ├── orchestrator.py            # PipelineOrchestrator, StageDefinition
-│   │   └── v101_bridge.py            # Bridge functions for V10.1 data types
-│   ├── models/                        # V10.1 Data Models
-│   │   ├── __init__.py
+│   │   ├── dag.py                     # DAGExecutor, ExecutionResult
+│   │   ├── orchestrator.py            # PipelineOrchestrator
+│   │   └── v101_bridge.py            # Bridge functions for V10.1
+│   ├── models/                        # Data Models
 │   │   ├── data.py                    # 9 frozen data types
-│   │   ├── clip.py                    # ClipCandidate, PortfolioClip, Portfolio
-│   │   ├── reasoning.py               # Event, EventRole, Evidence, ClipHypothesis
-│   │   ├── evaluation.py              # EvaluationRecord, EvaluationLifecycle
-│   │   ├── feature.py
-│   │   ├── generation_state.py
-│   │   ├── graph.py
-│   │   ├── job.py
-│   │   ├── learning.py
-│   │   ├── segment.py
-│   │   ├── semantic.py
-│   │   ├── story.py
-│   │   ├── story_blueprint.py
-│   │   ├── topic_block.py
-│   │   └── transcript.py
-│   ├── config/                        # V10.1 Configuration
-│   │   ├── __init__.py
+│   │   ├── clip.py                    # ClipCandidate, Portfolio
+│   │   ├── reasoning.py               # Event, Evidence
+│   │   ├── evaluation.py              # EvaluationRecord
+│   │   ├── segment.py                 # AtomicSegment
+│   │   ├── semantic.py                # SegmentAnnotation, LLMStoryBoundary
+│   │   ├── story.py, story_blueprint.py
+│   │   └── transcript.py, topic_block.py
+│   ├── config/                        # Configuration
 │   │   ├── settings.py                # PipelineSettings (frozen)
-│   │   ├── budgets.py                 # StageBudget, STAGE_BUDGETS, check_budget()
+│   │   ├── budgets.py                 # StageBudget, STAGE_BUDGETS
 │   │   ├── models.py                  # ModelConfig with safe limits
-│   │   ├── runtime.yaml               # Runtime config (models, scheduler, workers)
-│   │   ├── thresholds.py
-│   │   ├── ranking_config.py
-│   │   ├── semantic_config.py
-│   │   └── worker_limits.py
+│   │   ├── semantic_config.py         # ComposerDebugLevel, composer constants
+│   │   ├── weight_profiles.py         # Domain-specific weight profiles
+│   │   └── runtime.yaml
 │   ├── services/                      # Services
-│   │   ├── __init__.py
-│   │   ├── llm_provider.py            # LLMProvider, GroqProvider, GeminiProvider, ProviderRouter
-│   │   ├── prompt_store.py            # PromptStore - reference-based prompt storage
-│   │   ├── prompt_factory.py          # PromptFactory - creates LLMTasks from context
-│   │   ├── payload_validator.py       # PayloadValidator - validates against model limits
-│   │   ├── payload_splitter.py        # PayloadSplitter - task-specific splitting strategies
-│   │   ├── token_counter.py           # TokenCounter - tiktoken + heuristic fallback
-│   │   ├── adaptive_windows.py        # AdaptiveWindowSplitter, WindowConfig
-│   │   ├── roles.py                   # DynamicRoleClassifier
-│   │   ├── snapshots.py               # PipelineSnapshotService, SnapshotV1
-│   │   ├── audio_service.py
-│   │   ├── whisper_manager.py
-│   │   ├── transcription_service.py
-│   │   ├── segmentation_service.py
-│   │   ├── feature_service.py
-│   │   ├── graph_service.py
-│   │   ├── scoring_service.py
-│   │   ├── embedding_service.py
-│   │   ├── embedding_clusterer.py
+│   │   ├── deterministic_story_composer.py  # Beam search story composer
+│   │   ├── story_detector.py          # Story candidate formation
+│   │   ├── story_validator.py         # Story validation
+│   │   ├── semantic_service.py        # Pass 1 annotation
+│   │   ├── story_reasoner.py          # Legacy LLM Pass 2 (replaced)
+│   │   ├── embedding_clusterer.py     # Topic block clustering
 │   │   ├── block_synopsis_generator.py
 │   │   ├── priority_ranker.py
 │   │   ├── transcript_summarizer.py
-│   │   ├── semantic_service.py
-│   │   ├── story_reasoner.py
-│   │   ├── story_detector.py
-│   │   ├── story_validator.py
-│   │   ├── coverage_analyzer.py
 │   │   ├── blueprint_generator.py
-│   │   ├── duplicate_guard.py
-│   │   ├── preview_service.py
-│   │   ├── rendering_service.py
-│   │   └── storage_service.py
+│   │   ├── coverage_analyzer.py
+│   │   ├── llm_provider.py            # ProviderRouter, GroqProvider
+│   │   ├── prompt_store.py, prompt_factory.py
+│   │   ├── payload_validator.py, payload_splitter.py
+│   │   ├── token_counter.py
+│   │   ├── audio_service.py, whisper_manager.py
+│   │   ├── transcription_service.py
+│   │   ├── segmentation_service.py
+│   │   ├── feature_service.py, graph_service.py
+│   │   ├── scoring_service.py, embedding_service.py
+│   │   ├── preview_service.py, rendering_service.py
+│   │   └── snapshots.py
 │   ├── execution/                     # LLM Scheduler
-│   │   ├── __init__.py
-│   │   ├── models.py                  # LLMTask, TaskState, SplitMetadata, SchedulerMetrics
-│   │   ├── scheduler.py               # LLMScheduler - queue, dispatch, heartbeat, resilience
-│   │   ├── provider_adapter.py        # ProviderAdapter - model-aware execution
-│   │   ├── model_registry.py          # ModelRegistry - immutable model mapping
-│   │   ├── token_budget.py            # TokenBudget - reservation model
-│   │   ├── circuit_breaker.py         # CircuitBreaker - CLOSED/OPEN/HALF_OPEN
-│   │   ├── execution_policy.py        # ExecutionPolicy - retry, backoff, timeout
-│   │   ├── engine.py                  # ExecutionEngine (legacy, unused by pipeline)
-│   │   ├── provider_session.py        # ProviderSession (legacy, unused by pipeline)
-│   │   ├── repository.py              # SegmentRepository
-│   │   └── profiler.py                # ExecutionProfiler
+│   │   ├── scheduler.py               # LLMScheduler
+│   │   ├── provider_adapter.py        # ProviderAdapter
+│   │   ├── model_registry.py          # ModelRegistry
+│   │   ├── token_budget.py            # TokenBudget
+│   │   ├── circuit_breaker.py         # CircuitBreaker
+│   │   ├── execution_policy.py        # ExecutionPolicy
+│   │   ├── models.py                  # LLMTask, TaskState
+│   │   └── repository.py, profiler.py
 │   ├── strategies/                    # V10.1 Clip Strategies
-│   │   ├── __init__.py
 │   │   ├── base.py                    # ClipStrategy ABC
 │   │   └── builtin.py                 # Story, Hook, Reveal, Reaction, Opinion
 │   ├── objectives/                    # V10.1 Scoring Objectives
-│   │   ├── __init__.py
-│   │   ├── base.py                    # Objective ABC, ObjectiveMetadata
-│   │   ├── registry.py                # ObjectiveRegistry (DAG execution)
+│   │   ├── base.py                    # Objective ABC
+│   │   ├── registry.py                # ObjectiveRegistry (DAG)
 │   │   └── builtin.py                 # 10 built-in objectives
-│   ├── graph/                         # V10.1 Graph
-│   │   ├── __init__.py
-│   │   ├── evidence.py                # EvidenceGraph (window flattening)
-│   │   └── persistent.py              # PersistentKnowledgeGraph
 │   ├── optimization/                  # V10.1 Optimization
-│   │   ├── __init__.py
 │   │   ├── narrative.py               # NarrativeOptimizer
-│   │   ├── portfolio.py               # PortfolioOptimizer, SimilarityProvider ABC
+│   │   ├── portfolio.py               # PortfolioOptimizer (MMR)
 │   │   └── deduplication.py           # CandidateDeduplicationService
-│   ├── evaluation/                    # V10.1 Evaluation
-│   │   ├── __init__.py
+│   ├── evaluation/
 │   │   └── layer.py                   # EvaluationLayer
-│   ├── api/
-│   │   └── routes/
-│   ├── ranking/
-│   │   ├── pipeline.py
-│   │   ├── models.py
-│   │   └── *.py
-│   ├── workers/
-│   │   ├── scheduler.py
-│   │   ├── worker_pool.py
-│   │   └── *_worker.py
-│   ├── storage/
-│   │   ├── file_store.py
-│   │   ├── job_store.py
-│   │   └── state_store.py
+│   ├── graph/
+│   │   ├── evidence.py                # EvidenceGraph
+│   │   └── persistent.py              # PersistentKnowledgeGraph
+│   ├── ranking/                       # Multi-stage ranking
+│   │   ├── pipeline.py                # RankingEngine
+│   │   ├── hard_constraints.py, narrative.py, context.py
+│   │   ├── hook_quality.py, density.py, retention.py
+│   │   ├── novelty.py, confidence.py
+│   │   ├── tie_breaker.py, explanation.py, optimizer.py
+│   │   └── models.py
 │   ├── pipelines/
-│   │   ├── production_pipeline.py
-│   │   ├── orchestrator.py
-│   │   ├── event_bus.py
-│   │   ├── learning_pipeline.py
-│   │   └── analytics_pipeline.py
-│   ├── contracts/
-│   │   └── module_contracts.md
-│   ├── tests/
-│   │   ├── test_strategies.py
-│   │   ├── test_objectives.py
-│   │   ├── test_deduplication.py
-│   │   ├── test_evaluation.py
-│   │   ├── test_integration.py
-│   │   ├── test_pipeline_contracts.py
-│   │   └── unit/
-│   └── utils/
+│   │   ├── production_pipeline.py     # Main pipeline
+│   │   ├── orchestrator.py, event_bus.py
+│   │   ├── learning_pipeline.py, analytics_pipeline.py
+│   ├── storage/
+│   │   ├── file_store.py, job_store.py
+│   │   ├── manifest_store.py, state_store.py
+│   ├── workers/
+│   │   ├── scheduler.py, worker_pool.py
+│   │   ├── transcription_worker.py, feature_worker.py
+│   │   └── clip_worker.py, learning_worker.py
+│   ├── api/routes/                    # API endpoints
+│   ├── utils/                         # Utilities
+│   └── tests/                         # 274+ tests
+│       ├── unit/                      # Unit tests
+│       └── integration/               # Integration tests
 ├── frontend/
 │   └── src/
-│       ├── app/
-│       ├── pages/
-│       ├── components/
-│       ├── hooks/
-│       ├── services/
-│       ├── store/
-│       ├── styles/
-│       └── types/
-├── shared/
-├── docker/
-├── storage/
+│       ├── app/                       # App, Router
+│       ├── pages/                     # Upload, Status, Preview, Results, Settings
+│       ├── components/                # UI components
+│       ├── hooks/                     # React hooks
+│       ├── services/                  # API services
+│       ├── store/                     # State management
+│       └── types/                     # TypeScript types
+├── shared/                            # Shared contracts and schemas
+├── docker/                            # Dockerfiles
+├── storage/                           # Runtime job data
 ├── docker-compose.yml
 ├── start.bat
-├── smoke_test.py
-└── .env.example
+└── smoke_test.py
 ```
 
 ---
 
 ## Production Pipeline
 
-The pipeline processes videos through sequential stages with automatic budget enforcement, deterministic artifact tracking, and the new LLM Scheduler for all LLM calls.
+The pipeline processes videos through sequential stages with automatic budget enforcement, deterministic artifact tracking, and the LLM Scheduler for all LLM calls.
 
 ```mermaid
 flowchart TB
@@ -954,10 +718,9 @@ flowchart TB
 
     BLOCKS --> LLM_SCHED["LLM Scheduler"]
     PQ --> LLM_SCHED
-    LLM_SCHED --> VALIDATE["Payload Validation"]
-    VALIDATE --> SUM["Structured Summary"]
+    LLM_SCHED --> SUM["Structured Summary"]
     SUM --> P1["Pass 1: Segment Annotation"]
-    P1 --> P2["Pass 2: Story Reasoning"]
+    P1 --> P2["Story Composer: Beam Search"]
 
     P2 --> DET["Story Detection"]
     DET --> REPAIR["Story Repair"]
@@ -969,7 +732,7 @@ flowchart TB
     STRAT --> DEDUP["Candidate Deduplication"]
     DEDUP --> OBJ["Objective Scoring - 10 objectives"]
     OBJ --> NARR["Narrative Optimization"]
-    NARR --> PORT["Portfolio Optimization - MMR + diversity"]
+    NARR --> PORT["Portfolio Optimization"]
     PORT --> EVAL["Evaluation Recording"]
     EVAL --> SNAP["Pipeline Snapshot"]
 
@@ -980,59 +743,38 @@ flowchart TB
 
     EXT -->|"Error"| FAIL2["Fail: extraction error"]
     TRANS -->|"Error"| FAIL3["Fail: transcription error"]
-
-    style START fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
-    style DONE fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
-    style FAIL1 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
-    style FAIL2 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
-    style FAIL3 fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
-    style LLM_SCHED fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
-    style VALIDATE fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
-    style PQ fill:#06b6d4,color:#fff,stroke:#0891b2,stroke-width:2px
-    style STRAT fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
-    style DEDUP fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
-    style OBJ fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
-    style NARR fill:#06b6d4,color:#fff,stroke:#0891b2,stroke-width:2px
-    style PORT fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
-    style EVAL fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
-    style SNAP fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
 ```
 
 ### Pipeline Stages
 
-| # | Stage | Budget | Description |
-|---|---|---|---|
-| 1 | FFmpeg Check | - | Verify ffmpeg/ffprobe are installed |
-| 2 | Audio Extraction | - | Extract audio as OGG/Opus via FFmpeg |
-| 3 | Chunk Planning | - | Calculate adaptive chunk sizes |
-| 4 | Chunk Splitting | - | Split audio into chunk files |
-| 5 | Transcription | - | Parallel transcription via Faster-Whisper |
-| 6 | Merge | - | Deduplicate and merge transcripts |
-| 7 | Segmentation | - | Split into atomic segments |
-| 8 | Feature Extraction | - | Compute audio energy, text density, structure |
-| 9 | Adaptive Windows | 100ms | Split into duration-based windows |
-| 10 | Signal Extraction | 200ms | Extract audio/text signals |
-| 11 | Evidence Compilation | 500ms | Build evidence graph |
-| 12 | Graph Construction | 300ms | Build knowledge graph |
-| 13 | Role Classification | 150ms | Hook/body/ending classification |
-| 14 | Embedding Clustering | - | Group segments into topic blocks |
-| 15 | Block Synopses | - | Generate deterministic synopses |
-| 16 | Structured Summary | - | Global video summary via LLM Scheduler |
-| 17 | Pass 1 | - | Segment annotation (parallel batches) |
-| 18 | Pass 2 | - | Story boundary detection (parallel) |
-| 19 | Story Detection | - | Candidate formation and repair |
-| 20 | Story Validation | - | Quality scoring and rejection |
-| 21 | Blueprint Generation | - | Story-to-blueprint conversion |
-| 22 | Strategy Execution | 1000ms | Run 5 clip strategies |
-| 23 | Candidate Deduplication | 100ms | Similarity-based dedup |
-| 24 | Objective Scoring | 2000ms | Score with 10 objectives (DAG order) |
-| 25 | Narrative Optimization | 200ms | Sort for narrative flow |
-| 26 | Portfolio Optimization | 200ms | MMR + diversity selection |
-| 27 | Evaluation Recording | 50ms | Save evaluation records |
-| 28 | Multi-Stage Ranking | - | 11-stage ranking engine |
-| 29 | Preview | - | Build preview manifest |
-| 30 | Export | - | Render top clip as MP4 |
-| 31 | Learning | - | Save analytics and learning data |
+| # | Stage | Description |
+|---|---|---|
+| 1 | FFmpeg Check | Verify ffmpeg/ffprobe are installed |
+| 2 | Audio Extraction | Extract audio as OGG/Opus via FFmpeg |
+| 3 | Chunk Planning | Calculate adaptive chunk sizes |
+| 4 | Chunk Splitting | Split audio into chunk files |
+| 5 | Transcription | Parallel transcription via Faster-Whisper |
+| 6 | Merge | Deduplicate and merge transcripts |
+| 7 | Segmentation | Split into atomic segments |
+| 8 | Feature Extraction | Compute audio energy, text density, structure |
+| 9 | Embedding Clustering | Group segments into topic blocks |
+| 10 | Block Synopses | Generate deterministic synopses |
+| 11 | Structured Summary | Global video summary via LLM Scheduler |
+| 12 | Pass 1 | Segment annotation (parallel batches) |
+| 13 | Story Composer | Deterministic beam search story composition |
+| 14 | Story Detection | Candidate formation and repair |
+| 15 | Story Validation | Quality scoring and rejection |
+| 16 | Blueprint Generation | Story-to-blueprint conversion |
+| 17 | Strategy Execution | Run 5 clip strategies |
+| 18 | Candidate Deduplication | Similarity-based dedup |
+| 19 | Objective Scoring | Score with 10 objectives (DAG order) |
+| 20 | Narrative Optimization | Sort for narrative flow |
+| 21 | Portfolio Optimization | MMR + diversity selection |
+| 22 | Evaluation Recording | Save evaluation records |
+| 23 | Multi-Stage Ranking | 11-stage ranking engine |
+| 24 | Preview | Build preview manifest |
+| 25 | Export | Render top clip as MP4 |
+| 26 | Learning | Save analytics and learning data |
 
 ---
 
@@ -1293,48 +1035,43 @@ sequenceDiagram
     participant A as FastAPI
     participant O as Orchestrator
     participant P as Pipeline
-    participant T as Transcription
     participant S as Storage
 
     U->>F: Select video file
-    F->>A: POST /api/process (multipart)
+    F->>A: POST /api/process
     A->>S: Create job directory
     A->>O: start_job(job_id)
-    A-->>F: job_id, status: uploaded
+    A-->>F: job_id status uploaded
 
     loop Every 2.5s
-        F->>A: GET /api/status/{job_id}
+        F->>A: GET /api/status
         A->>S: Read state.json
-        A-->>F: status, progress
+        A-->>F: status progress
     end
 
     O->>P: run(job_id)
     P->>S: Extract audio
     P->>S: Split chunks
-
-    loop Each chunk (rate-limited)
-        P->>T: transcribe_chunk()
-        T-->>P: TranscriptChunk
-    end
-
+    P->>S: Transcribe
     P->>S: Merge transcripts
     P->>S: Build segments
     P->>S: Extract features
     P->>S: Embedding clustering
     P->>S: Generate summary
-    P->>S: Pass 1 + Pass 2
+    P->>S: Pass 1 annotation
+    P->>S: Story composer
     P->>S: Story detection
     P->>S: Score candidates
     P->>S: Rank clips
     P->>S: Build preview
     P->>S: Render MP4
 
-    F->>A: GET /api/preview/{job_id}
+    F->>A: GET /api/preview
     A->>S: Read preview_manifest.json
     A-->>F: PreviewManifest
 
     U->>F: Click download
-    F->>A: GET /api/download/{job_id}
+    F->>A: GET /api/download
     A->>S: Read MP4 file
     A-->>F: File response
 ```
@@ -1373,10 +1110,6 @@ flowchart TD
 
     LOCAL --> RESULT
     STUB --> RESULT
-
-    style START fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
-    style RESULT fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
-    style RETRY fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
 ```
 
 | Priority | Provider | Model | Fallback Trigger |
@@ -1404,22 +1137,16 @@ flowchart TD
 #### ProviderRouter (Multi-Key Load Balancing)
 
 ```mermaid
-flowchart TB
+flowchart LR
     REQ["LLM Request"] --> ROUTER["ProviderRouter"]
-
-    subgraph Buckets["Token Buckets"]
-        ROUTER --> B1["groq-1 - 5500/60s"]
-        ROUTER --> B2["groq-2 - 5500/60s"]
-        ROUTER --> B3["groq-3 - 5500/60s"]
-        ROUTER --> B4["gemini - 30000/60s"]
-    end
-
+    ROUTER --> B1["groq-1"]
+    ROUTER --> B2["groq-2"]
+    ROUTER --> B3["groq-3"]
+    ROUTER --> B4["gemini"]
     B1 --> G1["Groq API"]
     B2 --> G1
     B3 --> G1
     B4 --> G2["Gemini API"]
-
-    style ROUTER fill:#06b6d4,color:#fff,stroke:#0891b2,stroke-width:2px
 ```
 
 **Configuration** - each key on its own line in `.env`:
@@ -1437,7 +1164,7 @@ GEMINI_API_KEY=AIza...
 The ranking engine uses multiple stages to score and select the best clips.
 
 ```mermaid
-flowchart TB
+flowchart LR
     C["Candidates"] --> HC["Hard Constraints"]
     HC --> NV["Narrative Validation"]
     NV --> CTX["Context Coherence"]
@@ -1448,17 +1175,6 @@ flowchart TB
     ND --> FINAL["Final Score"]
     FINAL --> MMR["MMR Optimization"]
     MMR --> RANKED["Ranked Clips"]
-
-    style HC fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
-    style NV fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
-    style CTX fill:#f59e0b,color:#fff,stroke:#d97706,stroke-width:2px
-    style HQ fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
-    style ID fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
-    style RP fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
-    style ND fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px
-    style FINAL fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
-    style MMR fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px
-    style RANKED fill:#10b981,color:#fff,stroke:#059669,stroke-width:2px
 ```
 
 ### Scoring Formula
@@ -1483,14 +1199,6 @@ total_score = hook_score * 0.35 + body_score * 0.25 + ending_score * 0.20 + flow
 | 10 | `explanation.py` | Human-readable ranking explanations |
 | 11 | `optimizer.py` | MMR optimization: quality (0.7) + diversity (0.3) |
 
-### Segment Classification
-
-| Type | Detection Method | Example Patterns |
-|---|---|---|
-| **Hook** | First sentence + pattern match | "What if...", "Did you know...", "Imagine..." |
-| **Body** | Default for middle sentences | (any text) |
-| **Ending** | Last sentence + pattern match | "So that's why...", "Subscribe...", "Thanks for watching..." |
-
 ---
 
 ## Frontend
@@ -1508,14 +1216,14 @@ flowchart TB
     end
 
     subgraph State["State"]
-        JS["jobStore - Polling"]
-        PS["previewStore - Selection"]
-        UI["uiStore - Theme"]
+        JS["jobStore"]
+        PS["previewStore"]
+        UI["uiStore"]
     end
 
     UP -->|"Upload"| JS
-    JS -->|"Poll /api/status"| SP
-    JS -->|"Fetch /api/preview"| PP
+    JS -->|"Poll status"| SP
+    JS -->|"Fetch preview"| PP
     PP -->|"Select clips"| PS
     PP -->|"Download"| RP
     SET -->|"Configure"| UI
@@ -1778,13 +1486,12 @@ storage/jobs/{job_id}/
 │   ├── priority_queue.json
 │   ├── summary.json
 │   ├── segment_annotations.json
-│   ├── pass1_checkpoint.jsonl
 │   ├── pass1_raw.json
-│   ├── pass2_checkpoint.jsonl
 │   └── pass2_raw.json
 ├── stories/
 │   ├── story_candidates.json
-│   └── validated_stories.json
+│   ├── validated_stories.json
+│   └── story_reasoning.json
 ├── clips/
 │   ├── candidates.json
 │   ├── story_blueprints.json
@@ -1808,7 +1515,7 @@ storage/jobs/{job_id}/
 ## Testing
 
 ```bash
-# Run all tests
+# Run all tests (274+ tests)
 python -m pytest backend/tests/ -v
 
 # Run V10.1 pipeline core tests
@@ -1816,6 +1523,9 @@ python -m pytest backend/tests/test_strategies.py backend/tests/test_objectives.
 
 # Run pipeline contract tests
 python -m pytest backend/tests/test_pipeline_contracts.py -v
+
+# Run deterministic story composer tests
+python -m pytest backend/tests/unit/test_deterministic_story_composer.py -v
 
 # Run existing unit tests only
 python -m pytest backend/tests/unit/ -v
@@ -1827,7 +1537,7 @@ python -m pytest backend/tests/ --cov=backend --cov-report=term-missing
 ### Smoke Test
 
 ```bash
-# Full pipeline smoke test (verifies all 13 production guarantees)
+# Full pipeline smoke test
 python smoke_test.py
 ```
 
